@@ -1,30 +1,62 @@
+# ============================================================
+# CANweeb 設定サンプル
+#
+# 典型構成: メイン処理 PC (node-main) <-> Raspberry Pi (node-pi)
+#   USB (主経路, 低遅延) + Wi-Fi Direct (フェイルオーバ)
+#
+# traffic_class の使い分け
+#   control   : GPIO 制御, 緊急停止, 状態遷移, 役割コマンド
+#               ACK あり / ディスク永続化あり / 再送あり
+#   telemetry : IMU, odometry, バッテリ, 推定状態
+#               ACK なし / メモリのみ / topic キャッシュに最新値保持
+#   stream    : カメラ, RGB-D, LiDAR, 大容量バイナリ
+#               ACK なし / メモリのみ / chunked 転送
+#
+# 高頻度センサ (100 Hz 以上) を control に載せないこと。
+# SD/eMMC が摩耗し、制御系のレイテンシも悪化する。
+# ============================================================
+
 [node]
-node_id = "node-b"
-tags = ["robot", "control"]
+node_id = "node-pi"
+tags = ["robot", "sensor", "actuator"]
 
 [storage]
+# control クラスのメッセージのみここに永続化される
 root = "../data"
+# 配送済み control メッセージの保持期間 (秒)
 retention_seconds = 86400
 
 [web]
+# デバッグ WebUI と HTTP API
 bind = "0.0.0.0:8080"
 
 [transport]
+# USB Gadget Ethernet (Pi OTG) 経由の主経路
 usb_listen = "0.0.0.0:7001"
+# Wi-Fi Direct 経由のフェイルオーバ経路
 wifi_listen = "0.0.0.0:7002"
+# 接続リトライ間隔 (ms)
 connect_interval_ms = 1500
+# Ping/Pong ハートビート間隔 (ms)
 heartbeat_interval_ms = 1000
+# control ACK タイムアウト (ms)
 ack_timeout_ms = 2500
-max_hops = 8
+# メッシュ転送の最大ホップ数
+max_hops = 4
+
+# ---- ピア定義 ----
+# usb_addr  : USB Gadget Ethernet 経由のアドレス (優先)
+# wifi_addr : Wi-Fi Direct 経由のアドレス (フェイルオーバ)
+# 両方設定しておくことで USB 切断時に自動的に Wi-Fi へ切り替わる
 
 [[peers]]
-node_id = "node-a"
+node_id = "node-main"
 usb_addr = "192.168.7.1:7001"
 wifi_addr = "192.168.49.1:7002"
-tags = ["strategy"]
+tags = ["strategy", "ai"]
 
-[[peers]]
-node_id = "node-c1"
-usb_addr = "192.168.8.2:7001"
-wifi_addr = "192.168.49.21:7002"
-tags = ["control", "sensor"]
+# マイコン追加例 (Wi-Fi のみ, USB なし)
+# [[peers]]
+# node_id = "node-mcu1"
+# wifi_addr = "192.168.49.30:7002"
+# tags = ["actuator"]

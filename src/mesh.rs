@@ -1,7 +1,12 @@
 use crate::config::AppConfig;
-use crate::protocol::{now_ms, AckFrame, DeliveryTarget, Envelope, Frame, HelloFrame, PingFrame, TrafficClass, TransportKind};
+use crate::protocol::{
+    now_ms, AckFrame, DeliveryTarget, Envelope, Frame, HelloFrame, PingFrame,
+    StreamChunkFrame, StreamCloseFrame, StreamOpenFrame, SubscribeFrame, TrafficClass, TransportKind,
+    UnsubscribeFrame,
+};
 use crate::storage::Storage;
 use anyhow::{anyhow, Context, Result};
+use dashmap::DashMap;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -19,6 +24,8 @@ pub struct Runtime {
     config: Arc<AppConfig>,
     storage: Arc<Storage>,
     peers: Arc<PeerRegistry>,
+    /// peer_id -> set of subscribed topics
+    peer_subscriptions: Arc<DashMap<String, Vec<String>>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -76,6 +83,7 @@ impl Runtime {
             config: Arc::new(config),
             storage,
             peers: Arc::new(PeerRegistry::default()),
+            peer_subscriptions: Arc::new(DashMap::new()),
         }))
     }
 
@@ -133,10 +141,89 @@ impl Runtime {
         Ok(())
     }
 
+    /// topic を指定したメッセージ送信（telemetry / stream 向け便利 API）
+    #[allow(dead_code)]
+    pub async fn publish(
+        &self,
+        topic: impl Into<String>,
+        traffic_class: TrafficClass,
+        content_type: String,
+        payload: Vec<u8>,
+    ) -> Result<Envelope> {
+        let topic = topic.into();
+        self.submit_message(
+            DeliveryTarget::Broadcast,
+            traffic_class,
+            topic.clone(),
+            topic,
+            content_type,
+            payload,
+            None,
+        )
+        .await
+    }
+
+    /// chunked stream 送信: payload を chunk_size に分割して StreamOpen/StreamChunk/StreamClose を送信する
+    /// chunk_size のデフォルト推奨値: 60_000 (60 KiB)
+    #[allow(dead_code)]
+    pub async fn publish_stream(
+        &self,
+        topic: impl Into<String>,
+        content_type: String,
+        payload: Vec<u8>,
+        chunk_size: usize,
+    ) -> Result<Uuid> {
+        let topic = topic.into();
+        let stream_id = Uuid::new_v4();
+        let chunk_size = chunk_size.max(1);
+        // owned chunks を先に構築してライフタイム問題を回避
+        let owned_chunks: Vec<Vec<u8>> = payload.chunks(chunk_size).map(|c| c.to_vec()).collect();
+        let total_chunks = owned_chunks.len() as u32;
+        let total_bytes = payload.len() as u64;
+
+        let open = StreamOpenFrame {
+            stream_id,
+            source_node: self.node_id().to_string(),
+            topic: topic.clone(),
+            content_type,
+            total_chunks,
+            total_bytes,
+            timestamp_ms: now_ms(),
+        };
+
+        // 接続中 peer の sender を snapshot してから送信（途中の接続変化に安全）
+        let senders = self.peers.all_senders().await;
+        for sender in &senders {
+            let _ = sender.send(Frame::StreamOpen(open.clone())).await;
+        }
+
+        for (index, chunk_data) in owned_chunks.iter().enumerate() {
+            let chunk = StreamChunkFrame {
+                stream_id,
+                chunk_index: index as u32,
+                data: chunk_data.clone(),
+            };
+            for sender in &senders {
+                let _ = sender.send(Frame::StreamChunk(chunk.clone())).await;
+            }
+        }
+
+        let close = StreamCloseFrame {
+            stream_id,
+            timestamp_ms: now_ms(),
+        };
+        for sender in &senders {
+            let _ = sender.send(Frame::StreamClose(close.clone())).await;
+        }
+
+        Ok(stream_id)
+    }
+
     pub async fn submit_message(
         &self,
         target: DeliveryTarget,
         traffic_class: TrafficClass,
+        topic: String,
         subject: String,
         content_type: String,
         payload: Vec<u8>,
@@ -147,6 +234,7 @@ impl Runtime {
             source_node: self.node_id().to_string(),
             target,
             traffic_class,
+            topic,
             subject,
             content_type,
             created_at_ms: now_ms(),
@@ -159,15 +247,35 @@ impl Runtime {
         if envelope.traffic_class.should_store_inbox() && envelope.target.matches(self.node_id()) {
             self.storage.store_inbox(envelope.clone()).await?;
         }
+        if matches!(envelope.traffic_class, TrafficClass::Telemetry) && !envelope.topic.is_empty() {
+            self.storage.update_topic(envelope.clone()).await;
+        }
         Ok(envelope)
     }
 
     pub async fn accept_remote_message(&self, envelope: Envelope, ingress_peer: Option<String>) -> Result<bool> {
         let is_new = self.storage.queue_message(envelope.clone(), ingress_peer).await?;
         if envelope.traffic_class.should_store_inbox() && envelope.target.matches(self.node_id()) {
-            self.storage.store_inbox(envelope).await?;
+            self.storage.store_inbox(envelope.clone()).await?;
+        }
+        if matches!(envelope.traffic_class, TrafficClass::Telemetry) && !envelope.topic.is_empty() {
+            self.storage.update_topic(envelope).await;
         }
         Ok(is_new)
+    }
+
+    /// peer が subscribe しているトピック一覧を返す
+    #[allow(dead_code)]
+    pub fn peer_topics(&self, peer_id: &str) -> Vec<String> {
+        self.peer_subscriptions
+            .get(peer_id)
+            .map(|r| r.clone())
+            .unwrap_or_default()
+    }
+
+    /// storage への公開アクセス（web.rs から使う）
+    pub fn storage(&self) -> Arc<Storage> {
+        self.storage.clone()
     }
 
     pub async fn status_snapshot(&self) -> RuntimeStatus {
@@ -210,10 +318,6 @@ impl Runtime {
             inbox_items,
             peers,
         }
-    }
-
-    pub fn storage(&self) -> Arc<Storage> {
-        self.storage.clone()
     }
 
     pub fn node_id(&self) -> &str {
@@ -378,8 +482,45 @@ impl Runtime {
                 }
                 Ok(Frame::Pong(_)) => {}
                 Ok(Frame::Hello(_)) => {}
+                Ok(Frame::Subscribe(sub)) => {
+                    self.handle_subscribe(peer_id, sub).await;
+                }
+                Ok(Frame::Unsubscribe(unsub)) => {
+                    self.handle_unsubscribe(peer_id, unsub).await;
+                }
+                Ok(Frame::StreamOpen(open)) => {
+                    self.storage.stream_open(open).await;
+                }
+                Ok(Frame::StreamChunk(chunk)) => {
+                    if let Some(assembled) = self.storage.stream_chunk(chunk).await {
+                        self.storage.stream_close(assembled).await;
+                    }
+                }
+                Ok(Frame::StreamClose(close)) => {
+                    // StreamClose を受け取ったら、chunk が揃っていなくても強制的に組み立てる
+                    // (パケロスや片道切断でも受信側が詰まらないようにする)
+                    if let Some(assembled) = self.storage.stream_force_close(close.stream_id).await {
+                        self.storage.stream_close(assembled).await;
+                    }
+                }
                 Err(error) => return Err(error),
             }
+        }
+    }
+
+    async fn handle_subscribe(&self, peer_id: &str, sub: SubscribeFrame) {
+        let mut entry = self.peer_subscriptions.entry(peer_id.to_string()).or_default();
+        for topic in sub.topics {
+            if !entry.contains(&topic) {
+                entry.push(topic);
+            }
+        }
+        debug!(peer_id = %peer_id, "subscribe updated");
+    }
+
+    async fn handle_unsubscribe(&self, peer_id: &str, unsub: UnsubscribeFrame) {
+        if let Some(mut entry) = self.peer_subscriptions.get_mut(peer_id) {
+            entry.retain(|t| !unsub.topics.contains(t));
         }
     }
 
@@ -414,18 +555,29 @@ impl Runtime {
         loop {
             let pending = self.storage.pending_messages().await;
             let connected_peers = self.peers.connected_peer_ids().await;
+            // transient メッセージで即時削除するものを収集してまとめて削除する
+            // （ループ中に remove すると次 tick でもまだ pending に残るが、
+            //   dispatched フラグで二重送信は防ぐ。削除は tick 後に実施）
+            let mut to_remove: Vec<uuid::Uuid> = Vec::new();
 
             for message in pending {
                 if message.envelope.hops >= message.envelope.ttl {
+                    if !message.envelope.traffic_class.requires_ack() {
+                        to_remove.push(message.envelope.message_id);
+                    }
                     continue;
                 }
                 if !message.envelope.target.requires_forwarding_after(self.node_id()) {
+                    if !message.envelope.traffic_class.requires_ack() {
+                        to_remove.push(message.envelope.message_id);
+                    }
                     continue;
                 }
 
                 let mut candidates = connected_peers.clone();
                 sort_candidates_for_message(&mut candidates, &message.envelope.target);
 
+                let mut dispatched_any = false;
                 for peer_id in candidates {
                     if peer_id == self.node_id() {
                         continue;
@@ -443,7 +595,8 @@ impl Runtime {
                             None => true,
                         }
                     } else {
-                        true
+                        // transient: まだ dispatched されていない peer にのみ送る
+                        !message.acked_peers.contains(&peer_id)
                     };
 
                     if !should_retry {
@@ -459,6 +612,7 @@ impl Runtime {
 
                         match sender.send(Frame::Data(outbound)).await {
                             Ok(()) => {
+                                dispatched_any = true;
                                 let store_result = if message.envelope.traffic_class.requires_ack() {
                                     self.storage.record_attempt(message.envelope.message_id, &peer_id).await
                                 } else {
@@ -475,10 +629,15 @@ impl Runtime {
                     }
                 }
 
-                if !message.envelope.traffic_class.requires_ack() {
-                    if let Err(error) = self.storage.remove_message(message.envelope.message_id).await {
-                        warn!(%error, message_id = %message.envelope.message_id, "failed to remove transient message");
-                    }
+                // transient メッセージ: 全候補に送り終えたら削除
+                if !message.envelope.traffic_class.requires_ack() && dispatched_any {
+                    to_remove.push(message.envelope.message_id);
+                }
+            }
+
+            for message_id in to_remove {
+                if let Err(error) = self.storage.remove_message(message_id).await {
+                    warn!(%error, %message_id, "failed to remove transient message");
                 }
             }
 
@@ -494,6 +653,7 @@ impl Runtime {
             if let Err(error) = self.storage.cleanup_queue(retention_ms).await {
                 warn!(%error, "queue cleanup failed");
             }
+            self.storage.cleanup_streams().await;
             sleep(interval).await;
         }
     }
@@ -570,6 +730,18 @@ impl PeerRegistry {
         inner.keys().cloned().collect()
     }
 
+    /// 全接続中 peer の best sender を snapshot で返す（publish_stream 用）
+    async fn all_senders(&self) -> Vec<LinkSender> {
+        let inner = self.inner.read().await;
+        inner
+            .values()
+            .filter_map(|links| {
+                links.usb.as_ref().map(|l| l.sender.clone())
+                    .or_else(|| links.wifi.as_ref().map(|l| l.sender.clone()))
+            })
+            .collect()
+    }
+
     async fn snapshot(&self) -> HashMap<String, Vec<PeerLinkStatus>> {
         let inner = self.inner.read().await;
         inner
@@ -622,11 +794,20 @@ async fn write_frame(writer: &mut OwnedWriteHalf, frame: &Frame) -> Result<()> {
     Ok(())
 }
 
+/// フレームサイズ上限: 32 MiB (stream chunk 含む)
+const MAX_FRAME_SIZE: u32 = 32 * 1024 * 1024;
+
 async fn read_frame(reader: &mut OwnedReadHalf) -> Result<Frame> {
     let length = reader
         .read_u32()
         .await
         .context("failed to read frame length")?;
+    if length == 0 {
+        return Err(anyhow!("received zero-length frame"));
+    }
+    if length > MAX_FRAME_SIZE {
+        return Err(anyhow!("frame too large: {} bytes (max {})", length, MAX_FRAME_SIZE));
+    }
     let mut buffer = vec![0_u8; length as usize];
     reader
         .read_exact(&mut buffer)
@@ -638,7 +819,10 @@ async fn read_frame(reader: &mut OwnedReadHalf) -> Result<Frame> {
 impl LinkSender {
     async fn send(&self, frame: Frame) -> Result<()> {
         let sender = match &frame {
+            // 非 Control の Data フレームと stream 系フレームは bulk キュー
             Frame::Data(envelope) if !matches!(envelope.traffic_class, TrafficClass::Control) => &self.bulk_tx,
+            Frame::StreamOpen(_) | Frame::StreamChunk(_) | Frame::StreamClose(_) => &self.bulk_tx,
+            // 制御系・ACK・Ping/Pong・Subscribe は control キュー
             _ => &self.control_tx,
         };
         sender.send(frame).await.map_err(|error| anyhow!("failed to enqueue frame: {error}"))

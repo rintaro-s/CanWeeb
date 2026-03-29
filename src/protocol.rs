@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// 物理トランスポートの種別
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportKind {
@@ -9,6 +10,11 @@ pub enum TransportKind {
     Wifi,
 }
 
+/// QoS トラフィッククラス
+///
+/// - `Control`  : ACK あり・永続化あり・再送あり（GPIO 制御、緊急停止、状態遷移）
+/// - `Telemetry`: ACK なし・永続化なし・最新値キャッシュ（IMU、姿勢、バッテリ）
+/// - `Stream`   : ACK なし・永続化なし・ring buffer（画像、RGB-D、LiDAR）
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TrafficClass {
@@ -18,6 +24,7 @@ pub enum TrafficClass {
     Stream,
 }
 
+/// 接続開始ハンドシェイク
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HelloFrame {
     pub node_id: String,
@@ -26,6 +33,7 @@ pub struct HelloFrame {
     pub timestamp_ms: u64,
 }
 
+/// hop-by-hop ACK（Control クラスのみ）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AckFrame {
     pub message_id: Uuid,
@@ -33,11 +41,53 @@ pub struct AckFrame {
     pub timestamp_ms: u64,
 }
 
+/// リンク生存確認
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PingFrame {
     pub timestamp_ms: u64,
 }
 
+/// topic サブスクリプション要求
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubscribeFrame {
+    pub topics: Vec<String>,
+}
+
+/// topic サブスクリプション解除
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UnsubscribeFrame {
+    pub topics: Vec<String>,
+}
+
+/// chunked stream の開始
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StreamOpenFrame {
+    pub stream_id: Uuid,
+    pub source_node: String,
+    pub topic: String,
+    pub content_type: String,
+    pub total_chunks: u32,
+    pub total_bytes: u64,
+    pub timestamp_ms: u64,
+}
+
+/// chunked stream の 1 チャンク
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StreamChunkFrame {
+    pub stream_id: Uuid,
+    pub chunk_index: u32,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+/// chunked stream の完了通知
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StreamCloseFrame {
+    pub stream_id: Uuid,
+    pub timestamp_ms: u64,
+}
+
+/// 配送ターゲット
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum DeliveryTarget {
     Node(String),
@@ -45,6 +95,10 @@ pub enum DeliveryTarget {
     Broadcast,
 }
 
+/// メッセージ本体
+///
+/// `topic` は pub/sub のチャンネル名。空文字列の場合は topic 配送しない。
+/// `traffic_class` で永続化・ACK・優先度が決まる。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Envelope {
     pub message_id: Uuid,
@@ -52,6 +106,9 @@ pub struct Envelope {
     pub target: DeliveryTarget,
     #[serde(default)]
     pub traffic_class: TrafficClass,
+    /// pub/sub トピック名（例: "imu", "cmd/motor", "image/front"）
+    #[serde(default)]
+    pub topic: String,
     pub subject: String,
     pub content_type: String,
     pub created_at_ms: u64,
@@ -61,6 +118,7 @@ pub struct Envelope {
     pub payload: Vec<u8>,
 }
 
+/// ネットワーク上を流れるフレーム
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Frame {
     Hello(HelloFrame),
@@ -68,6 +126,11 @@ pub enum Frame {
     Ack(AckFrame),
     Ping(PingFrame),
     Pong(PingFrame),
+    Subscribe(SubscribeFrame),
+    Unsubscribe(UnsubscribeFrame),
+    StreamOpen(StreamOpenFrame),
+    StreamChunk(StreamChunkFrame),
+    StreamClose(StreamCloseFrame),
 }
 
 impl TrafficClass {
