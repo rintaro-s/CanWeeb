@@ -1,0 +1,30 @@
+[node]
+node_id = "node-b"
+tags = ["robot", "control"]
+
+[storage]
+root = "../data"
+retention_seconds = 86400
+
+[web]
+bind = "0.0.0.0:8080"
+
+[transport]
+usb_listen = "0.0.0.0:7001"
+wifi_listen = "0.0.0.0:7002"
+connect_interval_ms = 1500
+heartbeat_interval_ms = 1000
+ack_timeout_ms = 2500
+max_hops = 8
+
+[[peers]]
+node_id = "node-a"
+usb_addr = "192.168.7.1:7001"
+wifi_addr = "192.168.49.1:7002"
+tags = ["strategy"]
+
+[[peers]]
+node_id = "node-c1"
+usb_addr = "192.168.8.2:7001"
+wifi_addr = "192.168.49.21:7002"
+tags = ["control", "sensor"]
