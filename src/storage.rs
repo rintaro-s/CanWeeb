@@ -1,10 +1,12 @@
 use crate::protocol::{now_ms, Envelope};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+const MAX_TRANSIENT_SEEN: usize = 65_536;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredMessage {
@@ -25,7 +27,9 @@ pub struct InboxEntry {
 struct StorageData {
     messages: HashMap<Uuid, StoredMessage>,
     inbox: HashMap<Uuid, InboxEntry>,
-    seen: HashSet<Uuid>,
+    durable_seen: HashSet<Uuid>,
+    transient_seen: HashSet<Uuid>,
+    transient_seen_order: VecDeque<Uuid>,
 }
 
 pub struct Storage {
@@ -56,15 +60,15 @@ impl Storage {
 
         let mut data = StorageData::default();
         for message in messages {
-            data.seen.insert(message.envelope.message_id);
+            data.durable_seen.insert(message.envelope.message_id);
             data.messages.insert(message.envelope.message_id, message);
         }
         for item in inbox {
-            data.seen.insert(item.envelope.message_id);
+            data.durable_seen.insert(item.envelope.message_id);
             data.inbox.insert(item.envelope.message_id, item);
         }
         for id in seen {
-            data.seen.insert(id);
+            data.durable_seen.insert(id);
         }
 
         Ok(Self {
@@ -79,7 +83,7 @@ impl Storage {
         let message_id = envelope.message_id;
         {
             let data = self.data.read().await;
-            if data.seen.contains(&message_id) {
+            if data.durable_seen.contains(&message_id) || data.transient_seen.contains(&message_id) {
                 return Ok(false);
             }
         }
@@ -92,12 +96,18 @@ impl Storage {
             stored_at_ms: now_ms(),
         };
 
-        self.persist_seen(message_id).await?;
-        self.persist_message(&message).await?;
+        if message.envelope.traffic_class.should_persist_queue() {
+            self.persist_seen(message_id).await?;
+            self.persist_message(&message).await?;
 
-        let mut data = self.data.write().await;
-        data.seen.insert(message_id);
-        data.messages.insert(message_id, message);
+            let mut data = self.data.write().await;
+            data.durable_seen.insert(message_id);
+            data.messages.insert(message_id, message);
+        } else {
+            let mut data = self.data.write().await;
+            remember_transient_seen(&mut data, message_id);
+            data.messages.insert(message_id, message);
+        }
         Ok(true)
     }
 
@@ -115,10 +125,16 @@ impl Storage {
             received_at_ms: now_ms(),
         };
 
-        self.persist_inbox_item(&item).await?;
+        if item.envelope.traffic_class.should_persist_inbox() {
+            self.persist_inbox_item(&item).await?;
+        }
 
         let mut data = self.data.write().await;
-        data.seen.insert(message_id);
+        if item.envelope.traffic_class.should_persist_inbox() {
+            data.durable_seen.insert(message_id);
+        } else {
+            remember_transient_seen(&mut data, message_id);
+        }
         data.inbox.insert(message_id, item);
         Ok(true)
     }
@@ -135,7 +151,9 @@ impl Storage {
         };
 
         if let Some(message) = updated {
-            self.persist_message(&message).await?;
+            if message.envelope.traffic_class.should_persist_queue() {
+                self.persist_message(&message).await?;
+            }
         }
         Ok(())
     }
@@ -154,7 +172,28 @@ impl Storage {
         };
 
         if let Some(message) = updated {
-            self.persist_message(&message).await?;
+            if message.envelope.traffic_class.should_persist_queue() {
+                self.persist_message(&message).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn mark_dispatched(&self, message_id: Uuid, peer_id: &str) -> Result<()> {
+        let updated = {
+            let mut data = self.data.write().await;
+            if let Some(message) = data.messages.get_mut(&message_id) {
+                message.acked_peers.insert(peer_id.to_string());
+                Some(message.clone())
+            } else {
+                None
+            }
+        };
+
+        if let Some(message) = updated {
+            if message.envelope.traffic_class.should_persist_queue() {
+                self.persist_message(&message).await?;
+            }
         }
         Ok(())
     }
@@ -162,7 +201,7 @@ impl Storage {
     pub async fn pending_messages(&self) -> Vec<StoredMessage> {
         let data = self.data.read().await;
         let mut items = data.messages.values().cloned().collect::<Vec<_>>();
-        items.sort_by_key(|item| item.envelope.created_at_ms);
+        items.sort_by_key(|item| (item.envelope.traffic_class.dispatch_priority(), item.envelope.created_at_ms));
         items
     }
 
@@ -183,6 +222,23 @@ impl Storage {
         (data.messages.len(), data.inbox.len())
     }
 
+    pub async fn remove_message(&self, message_id: Uuid) -> Result<bool> {
+        let removed = {
+            let mut data = self.data.write().await;
+            data.messages.remove(&message_id)
+        };
+
+        if let Some(message) = removed {
+            if message.envelope.traffic_class.should_persist_queue() {
+                let path = self.message_path(message_id);
+                let _ = tokio::fs::remove_file(path).await;
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub async fn cleanup_queue(&self, retention_ms: u64) -> Result<usize> {
         let cutoff = now_ms().saturating_sub(retention_ms);
         let expired = {
@@ -195,8 +251,12 @@ impl Storage {
         };
 
         for message_id in &expired {
-            let path = self.message_path(*message_id);
-            let _ = tokio::fs::remove_file(path).await;
+            if let Some(message) = self.data.read().await.messages.get(message_id).cloned() {
+                if message.envelope.traffic_class.should_persist_queue() {
+                    let path = self.message_path(*message_id);
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+            }
         }
 
         let mut data = self.data.write().await;
@@ -265,6 +325,17 @@ where
     }
 
     Ok(items)
+}
+
+fn remember_transient_seen(data: &mut StorageData, message_id: Uuid) {
+    if data.transient_seen.insert(message_id) {
+        data.transient_seen_order.push_back(message_id);
+    }
+    while data.transient_seen_order.len() > MAX_TRANSIENT_SEEN {
+        if let Some(expired) = data.transient_seen_order.pop_front() {
+            data.transient_seen.remove(&expired);
+        }
+    }
 }
 
 async fn load_seen_directory(dir: &Path) -> Result<HashSet<Uuid>> {

@@ -1,5 +1,5 @@
 use crate::mesh::Runtime;
-use crate::protocol::{payload_preview, DeliveryTarget};
+use crate::protocol::{payload_preview, DeliveryTarget, TrafficClass};
 use anyhow::{Context, Result};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -51,6 +51,7 @@ async fn inbox(State(runtime): State<Arc<Runtime>>) -> Json<Vec<InboxSummary>> {
                 message_id: item.envelope.message_id.to_string(),
                 source_node: item.envelope.source_node,
                 target: item.envelope.target.label(),
+                traffic_class: item.envelope.traffic_class.label().to_string(),
                 subject: item.envelope.subject,
                 content_type: item.envelope.content_type.clone(),
                 created_at_ms: item.envelope.created_at_ms,
@@ -77,6 +78,7 @@ async fn inbox_item(
         message_id: item.envelope.message_id.to_string(),
         source_node: item.envelope.source_node,
         target: item.envelope.target.label(),
+        traffic_class: item.envelope.traffic_class.label().to_string(),
         subject: item.envelope.subject,
         content_type: item.envelope.content_type.clone(),
         created_at_ms: item.envelope.created_at_ms,
@@ -110,8 +112,12 @@ async fn send_message(
     });
 
     let subject = request.subject.unwrap_or_else(|| "untitled".to_string());
+    let traffic_class = match request.traffic_class.as_deref() {
+        Some(raw) => TrafficClass::parse(raw).context("invalid traffic_class")?,
+        None => TrafficClass::Control,
+    };
     let envelope = runtime
-        .submit_message(target, subject, content_type, payload, request.ttl)
+        .submit_message(target, traffic_class, subject, content_type, payload, request.ttl)
         .await?;
 
     Ok(Json(SendMessageResponse {
@@ -175,6 +181,7 @@ struct ErrorResponse {
 #[derive(Deserialize)]
 struct SendMessageRequest {
     target: String,
+    traffic_class: Option<String>,
     subject: Option<String>,
     content_type: Option<String>,
     text: Option<String>,
@@ -192,6 +199,7 @@ struct InboxSummary {
     message_id: String,
     source_node: String,
     target: String,
+    traffic_class: String,
     subject: String,
     content_type: String,
     created_at_ms: u64,
@@ -205,6 +213,7 @@ struct InboxDetail {
     message_id: String,
     source_node: String,
     target: String,
+    traffic_class: String,
     subject: String,
     content_type: String,
     created_at_ms: u64,
@@ -227,7 +236,7 @@ struct WifiDirectCommandResponse {
     stderr: String,
 }
 
-const INDEX_HTML: &str = r#"<!doctype html>
+const INDEX_HTML: &str = r##"<!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
@@ -253,6 +262,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
       <h2>送信テスト</h2>
       <label>Target</label>
       <input id="target" value="broadcast" />
+      <label>Traffic Class</label>
+      <input id="trafficClass" value="control" />
       <label>Subject</label>
       <input id="subject" value="test-message" />
       <label>Content-Type</label>
@@ -290,6 +301,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
           <th>Message</th>
           <th>From</th>
           <th>Target</th>
+          <th>Class</th>
           <th>Subject</th>
           <th>Preview</th>
         </tr>
@@ -314,6 +326,7 @@ async function refreshInbox() {
       <td class="mono"><a href="#" onclick="showInboxItem('${item.message_id}')">${item.message_id}</a></td>
       <td>${item.source_node}</td>
       <td>${item.target}</td>
+      <td>${item.traffic_class}</td>
       <td>${item.subject}</td>
       <td><code>${item.preview}</code></td>
     `;
@@ -347,6 +360,7 @@ async function sendMessage() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       target: document.getElementById('target').value,
+      traffic_class: document.getElementById('trafficClass').value,
       subject: document.getElementById('subject').value,
       content_type: contentType,
       text: payload_base64 ? null : document.getElementById('textPayload').value,
@@ -383,4 +397,4 @@ boot();
 </script>
 </body>
 </html>
-"#;
+"##;

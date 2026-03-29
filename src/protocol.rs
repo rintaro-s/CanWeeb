@@ -9,6 +9,15 @@ pub enum TransportKind {
     Wifi,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TrafficClass {
+    #[default]
+    Control,
+    Telemetry,
+    Stream,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HelloFrame {
     pub node_id: String,
@@ -41,6 +50,8 @@ pub struct Envelope {
     pub message_id: Uuid,
     pub source_node: String,
     pub target: DeliveryTarget,
+    #[serde(default)]
+    pub traffic_class: TrafficClass,
     pub subject: String,
     pub content_type: String,
     pub created_at_ms: u64,
@@ -57,6 +68,49 @@ pub enum Frame {
     Ack(AckFrame),
     Ping(PingFrame),
     Pong(PingFrame),
+}
+
+impl TrafficClass {
+    pub fn parse(input: &str) -> Result<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "control" => Ok(Self::Control),
+            "telemetry" => Ok(Self::Telemetry),
+            "stream" => Ok(Self::Stream),
+            other => Err(anyhow!("unknown traffic_class: {other}")),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Control => "control",
+            Self::Telemetry => "telemetry",
+            Self::Stream => "stream",
+        }
+    }
+
+    pub fn requires_ack(self) -> bool {
+        matches!(self, Self::Control)
+    }
+
+    pub fn should_persist_queue(self) -> bool {
+        matches!(self, Self::Control)
+    }
+
+    pub fn should_persist_inbox(self) -> bool {
+        matches!(self, Self::Control)
+    }
+
+    pub fn should_store_inbox(self) -> bool {
+        !matches!(self, Self::Stream)
+    }
+
+    pub fn dispatch_priority(self) -> u8 {
+        match self {
+            Self::Control => 0,
+            Self::Telemetry => 1,
+            Self::Stream => 2,
+        }
+    }
 }
 
 impl DeliveryTarget {

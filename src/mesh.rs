@@ -1,5 +1,5 @@
 use crate::config::AppConfig;
-use crate::protocol::{now_ms, AckFrame, DeliveryTarget, Envelope, Frame, HelloFrame, PingFrame, TransportKind};
+use crate::protocol::{now_ms, AckFrame, DeliveryTarget, Envelope, Frame, HelloFrame, PingFrame, TrafficClass, TransportKind};
 use crate::storage::Storage;
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
@@ -58,9 +58,15 @@ struct PeerLinks {
 #[derive(Clone)]
 struct LinkState {
     connection_id: Uuid,
-    sender: mpsc::Sender<Frame>,
+    sender: LinkSender,
     remote_addr: String,
     connected_at_ms: u64,
+}
+
+#[derive(Clone)]
+struct LinkSender {
+    control_tx: mpsc::Sender<Frame>,
+    bulk_tx: mpsc::Sender<Frame>,
 }
 
 impl Runtime {
@@ -130,6 +136,7 @@ impl Runtime {
     pub async fn submit_message(
         &self,
         target: DeliveryTarget,
+        traffic_class: TrafficClass,
         subject: String,
         content_type: String,
         payload: Vec<u8>,
@@ -139,6 +146,7 @@ impl Runtime {
             message_id: Uuid::new_v4(),
             source_node: self.node_id().to_string(),
             target,
+            traffic_class,
             subject,
             content_type,
             created_at_ms: now_ms(),
@@ -148,7 +156,7 @@ impl Runtime {
         };
 
         self.storage.queue_message(envelope.clone(), None).await?;
-        if envelope.target.matches(self.node_id()) {
+        if envelope.traffic_class.should_store_inbox() && envelope.target.matches(self.node_id()) {
             self.storage.store_inbox(envelope.clone()).await?;
         }
         Ok(envelope)
@@ -156,7 +164,7 @@ impl Runtime {
 
     pub async fn accept_remote_message(&self, envelope: Envelope, ingress_peer: Option<String>) -> Result<bool> {
         let is_new = self.storage.queue_message(envelope.clone(), ingress_peer).await?;
-        if envelope.target.matches(self.node_id()) {
+        if envelope.traffic_class.should_store_inbox() && envelope.target.matches(self.node_id()) {
             self.storage.store_inbox(envelope).await?;
         }
         Ok(is_new)
@@ -206,10 +214,6 @@ impl Runtime {
 
     pub fn storage(&self) -> Arc<Storage> {
         self.storage.clone()
-    }
-
-    pub fn config(&self) -> Arc<AppConfig> {
-        self.config.clone()
     }
 
     pub fn node_id(&self) -> &str {
@@ -278,11 +282,25 @@ impl Runtime {
 
         let peer_id = remote_hello.node_id.clone();
         let connection_id = Uuid::new_v4();
-        let (tx, mut rx) = mpsc::channel::<Frame>(256);
+        let (control_tx, mut control_rx) = mpsc::channel::<Frame>(512);
+        let (bulk_tx, mut bulk_rx) = mpsc::channel::<Frame>(1024);
+        let tx = LinkSender {
+            control_tx: control_tx.clone(),
+            bulk_tx: bulk_tx.clone(),
+        };
 
         let writer_task = tokio::spawn(async move {
-            while let Some(frame) = rx.recv().await {
-                write_frame(&mut writer, &frame).await?;
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(frame) = control_rx.recv() => {
+                        write_frame(&mut writer, &frame).await?;
+                    }
+                    Some(frame) = bulk_rx.recv() => {
+                        write_frame(&mut writer, &frame).await?;
+                    }
+                    else => break,
+                }
             }
             Ok::<(), anyhow::Error>(())
         });
@@ -315,7 +333,8 @@ impl Runtime {
 
         heartbeat_task.abort();
         self.peers.unregister(&peer_id, &transport, connection_id).await;
-        drop(tx);
+        drop(control_tx);
+        drop(bulk_tx);
 
         match writer_task.await {
             Ok(Ok(())) => {}
@@ -330,23 +349,26 @@ impl Runtime {
         self: Arc<Self>,
         reader: &mut OwnedReadHalf,
         peer_id: &str,
-        writer_tx: &mpsc::Sender<Frame>,
+        writer_tx: &LinkSender,
     ) -> Result<()> {
         loop {
             match read_frame(reader).await {
                 Ok(Frame::Data(envelope)) => {
+                    let requires_ack = envelope.traffic_class.requires_ack();
                     let message_id = envelope.message_id;
                     if let Err(error) = self.accept_remote_message(envelope, Some(peer_id.to_string())).await {
                         warn!(%error, peer_id = %peer_id, %message_id, "failed to accept remote message");
                     }
-                    writer_tx
-                        .send(Frame::Ack(AckFrame {
-                            message_id,
-                            from_node: self.node_id().to_string(),
-                            timestamp_ms: now_ms(),
-                        }))
-                        .await
-                        .context("failed to send ack")?;
+                    if requires_ack {
+                        writer_tx
+                            .send(Frame::Ack(AckFrame {
+                                message_id,
+                                from_node: self.node_id().to_string(),
+                                timestamp_ms: now_ms(),
+                            }))
+                            .await
+                            .context("failed to send ack")?;
+                    }
                 }
                 Ok(Frame::Ack(ack)) => {
                     self.storage.mark_ack(ack.message_id, peer_id).await?;
@@ -386,7 +408,7 @@ impl Runtime {
     }
 
     async fn dispatch_loop(self: Arc<Self>) {
-        let tick = Duration::from_millis(250);
+        let tick = Duration::from_millis(25);
         let ack_timeout_ms = self.config.transport.ack_timeout_ms;
 
         loop {
@@ -415,9 +437,13 @@ impl Runtime {
                         continue;
                     }
 
-                    let should_retry = match message.last_attempt_ms_by_peer.get(&peer_id) {
-                        Some(last_attempt_ms) => now_ms().saturating_sub(*last_attempt_ms) >= ack_timeout_ms,
-                        None => true,
+                    let should_retry = if message.envelope.traffic_class.requires_ack() {
+                        match message.last_attempt_ms_by_peer.get(&peer_id) {
+                            Some(last_attempt_ms) => now_ms().saturating_sub(*last_attempt_ms) >= ack_timeout_ms,
+                            None => true,
+                        }
+                    } else {
+                        true
                     };
 
                     if !should_retry {
@@ -433,14 +459,25 @@ impl Runtime {
 
                         match sender.send(Frame::Data(outbound)).await {
                             Ok(()) => {
-                                if let Err(error) = self.storage.record_attempt(message.envelope.message_id, &peer_id).await {
-                                    warn!(%error, peer_id = %peer_id, "failed to record attempt");
+                                let store_result = if message.envelope.traffic_class.requires_ack() {
+                                    self.storage.record_attempt(message.envelope.message_id, &peer_id).await
+                                } else {
+                                    self.storage.mark_dispatched(message.envelope.message_id, &peer_id).await
+                                };
+                                if let Err(error) = store_result {
+                                    warn!(%error, peer_id = %peer_id, "failed to update dispatch state");
                                 }
                             }
                             Err(error) => {
                                 warn!(%error, peer_id = %peer_id, "failed to dispatch frame");
                             }
                         }
+                    }
+                }
+
+                if !message.envelope.traffic_class.requires_ack() {
+                    if let Err(error) = self.storage.remove_message(message.envelope.message_id).await {
+                        warn!(%error, message_id = %message.envelope.message_id, "failed to remove transient message");
                     }
                 }
             }
@@ -468,7 +505,7 @@ impl PeerRegistry {
         peer_id: String,
         transport: TransportKind,
         connection_id: Uuid,
-        sender: mpsc::Sender<Frame>,
+        sender: LinkSender,
         remote_addr: String,
     ) {
         let mut inner = self.inner.write().await;
@@ -516,7 +553,7 @@ impl PeerRegistry {
         })
     }
 
-    async fn best_sender(&self, peer_id: &str) -> Option<mpsc::Sender<Frame>> {
+    async fn best_sender(&self, peer_id: &str) -> Option<LinkSender> {
         let inner = self.inner.read().await;
         let entry = inner.get(peer_id)?;
         if let Some(link) = &entry.usb {
@@ -596,4 +633,14 @@ async fn read_frame(reader: &mut OwnedReadHalf) -> Result<Frame> {
         .await
         .context("failed to read frame body")?;
     bincode::deserialize(&buffer).context("failed to deserialize frame")
+}
+
+impl LinkSender {
+    async fn send(&self, frame: Frame) -> Result<()> {
+        let sender = match &frame {
+            Frame::Data(envelope) if !matches!(envelope.traffic_class, TrafficClass::Control) => &self.bulk_tx,
+            _ => &self.control_tx,
+        };
+        sender.send(frame).await.map_err(|error| anyhow!("failed to enqueue frame: {error}"))
+    }
 }
