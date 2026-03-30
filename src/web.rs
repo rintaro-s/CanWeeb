@@ -20,6 +20,12 @@ pub async fn serve(runtime: Arc<Runtime>) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/api/status", get(status))
+        .route("/api/wifi/status", get(wifi_status))
+        .route("/api/wifi/apply-mode", post(apply_wifi_mode))
+        .route("/api/wifi/hotspot/start", post(start_hotspot))
+        .route("/api/wifi/connect", post(connect_wifi))
+        .route("/api/wifi/disconnect", post(disconnect_wifi))
+        .route("/api/peer-policies", get(peer_policies).post(update_peer_policy))
         .route("/api/inbox", get(inbox))
         .route("/api/inbox/:message_id", get(inbox_item))
         .route("/api/messages", post(send_message))
@@ -47,6 +53,52 @@ async fn index() -> Html<&'static str> {
 
 async fn status(State(runtime): State<Arc<Runtime>>) -> Json<crate::mesh::RuntimeStatus> {
     Json(runtime.status_snapshot().await)
+}
+
+async fn wifi_status(State(runtime): State<Arc<Runtime>>) -> Json<crate::wifi::WifiStatus> {
+    Json(runtime.wifi_status().await)
+}
+
+async fn apply_wifi_mode(
+    State(runtime): State<Arc<Runtime>>,
+    Json(request): Json<ApplyWifiModeRequest>,
+) -> Result<Json<crate::wifi::WifiActionResponse>, AppError> {
+    Ok(Json(runtime.apply_wifi_mode(request.mode.as_deref()).await?))
+}
+
+async fn start_hotspot(State(runtime): State<Arc<Runtime>>) -> Result<Json<crate::wifi::WifiActionResponse>, AppError> {
+    Ok(Json(runtime.start_hotspot().await?))
+}
+
+async fn connect_wifi(
+    State(runtime): State<Arc<Runtime>>,
+    Json(request): Json<ConnectWifiRequest>,
+) -> Result<Json<crate::wifi::WifiActionResponse>, AppError> {
+    Ok(Json(runtime.connect_wifi(&request.ssid, request.password.as_deref()).await?))
+}
+
+async fn disconnect_wifi(State(runtime): State<Arc<Runtime>>) -> Result<Json<crate::wifi::WifiActionResponse>, AppError> {
+    Ok(Json(runtime.disconnect_wifi().await?))
+}
+
+async fn peer_policies(State(runtime): State<Arc<Runtime>>) -> Json<Vec<crate::mesh::PeerPolicy>> {
+    Json(runtime.list_peer_policies().await)
+}
+
+async fn update_peer_policy(
+    State(runtime): State<Arc<Runtime>>,
+    Json(request): Json<PeerPolicyUpdateRequest>,
+) -> Result<Json<crate::mesh::PeerPolicy>, AppError> {
+    Ok(Json(
+        runtime
+            .update_peer_policy(crate::mesh::PeerPolicy {
+                node_id: request.node_id,
+                role: request.role,
+                relationship: request.relationship,
+                preferred_transport_order: request.preferred_transport_order,
+            })
+            .await?,
+    ))
 }
 
 async fn inbox(State(runtime): State<Arc<Runtime>>) -> Json<Vec<InboxSummary>> {
@@ -346,6 +398,25 @@ struct SendMessageRequest {
     text: Option<String>,
     payload_base64: Option<String>,
     ttl: Option<u8>,
+}
+
+#[derive(Deserialize)]
+struct ApplyWifiModeRequest {
+    mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConnectWifiRequest {
+    ssid: String,
+    password: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PeerPolicyUpdateRequest {
+    node_id: String,
+    role: Option<String>,
+    relationship: String,
+    preferred_transport_order: Vec<String>,
 }
 
 #[derive(Serialize)]

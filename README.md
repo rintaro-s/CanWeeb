@@ -4,10 +4,10 @@ Rust 製のロボティクス向け多経路メッシュ通信デーモン。マ
 
 ## 設計方針
 
-- **トランスポート非依存** — USB Ethernet・Wi-Fi Direct・Wi-Fi AP・有線 LAN、どれでも TCP が通れば動く
+- **トランスポート非依存** — USB Ethernet・通常 Wi-Fi LAN・Wi-Fi AP・有線 LAN、どれでも TCP が通れば動く
 - **QoS 分離** — `control` / `telemetry` / `stream` を完全に別経路・別キューで扱う
 - **センサデータをディスクに落とさない** — 高頻度センサや画像データは SD / eMMC 寿命を消費しない
-- **フォールバック自動化** — USB が切れた場合、未 ACK の `control` は Wi-Fi 側へ自動再送
+- **フォールバック自動化** — USB が切れた場合、未 ACK の `control` は network 側へ自動再送
 
 ## トランスポートの選び方
 
@@ -16,10 +16,32 @@ CANweeb は **TCP が通る経路ならなんでも使えます**。USB Ethernet
 | 経路 | 典型的な用途 | 設定 |
 |---|---|---|
 | USB gadget Ethernet (`192.168.7.x`) | Pi ↔ PC 間の主経路、最低遅延 | `usb_addr` |
-| Wi-Fi Direct / AP | USB なし環境・フォールバック | `wifi_addr` |
-| 有線 LAN | 机上テスト・チーム PC 間 | `wifi_addr` でも可 |
+| 通常 Wi-Fi LAN / AP | USB なし環境・フォールバック | `network_addr` |
+| 有線 LAN | 机上テスト・チーム PC 間 | `network_addr` |
 
-**USB がない環境**: `usb_addr` を省略して `wifi_addr` だけ設定すれば Wi-Fi のみで動きます。`usb_listen` / `wifi_listen` も片方だけで構いません。
+**USB がない環境**: `usb_addr` を省略して `network_addr` だけ設定すれば LAN / Wi-Fi のみで動きます。`usb_listen` / `network_listen` も片方だけで構いません。
+
+## 自動発見 / 自動ペアリング
+
+同一 LAN 内では UDP broadcast discovery により peer を**自動検知・自動接続**できます。
+
+- `discovery.enabled = true` で有効
+- 各ノードが `announce_addr` へ自分の `node_id` / `network_listen port` / `web port` を通知
+- 受信側は送信元 IP と通知 port から `network_addr` を自動生成
+- `[[peers]]` に `node_id` だけ書いておけば、IP 固定なしでも自動接続可能
+- `[[peers]]` 自体を書かなくても、検出された peer は status に現れ、動的接続される
+
+## Wi-Fi 自動化
+
+通常の LAN discovery に加えて、`wifi` セクションで **親の自動 AP 化** と **子の既知 AP 自動接続** を行えます。
+
+- 親ノード: `wifi.desired_mode = "parent"`
+  - `nmcli device wifi hotspot` で AP を作成
+- 子ノード: `wifi.desired_mode = "child"`
+  - `wifi.fallback_networks` を priority 順で接続試行
+- 親 UI から mode 切替 / AP 起動 / 手動接続 / 切断が可能
+- 親 UI から peer の `relationship` と `preferred_transport_order` を変更可能
+- child の power / uptime / queue / inbox / RTT / 接続品質も親 UI で監視可能
 
 ## Traffic Class
 
@@ -33,7 +55,8 @@ CANweeb は **TCP が通る経路ならなんでも使えます**。USB Ethernet
 
 ## 実装済み機能
 
-- USB / Wi-Fi の 2 系統 TCP リスナー・コネクタ（片方のみでも動作）
+- USB / network の 2 系統 TCP リスナー・コネクタ（片方のみでも動作）
+- 同一 LAN 上の peer 自動検知・自動接続（UDP broadcast discovery）
 - USB 優先の送信経路選択（USB 接続中は常に USB を優先）
 - 接続ごとの `control_tx` / `bulk_tx` 二重キュー（大容量 stream で制御系を塞がない）
 - `control` の ACK + hop-by-hop 再送（複数経路で自動フェイルオーバー）
@@ -66,6 +89,7 @@ WebUI: `http://<bind_addr>:8080`
 ```toml
 [node]
 node_id = "node-pi"
+role = "child"
 tags = ["robot", "sensor"]
 
 [storage]
@@ -77,29 +101,56 @@ bind = "0.0.0.0:8080"
 
 [transport]
 usb_listen  = "0.0.0.0:7001"   # USB Ethernet リスナー（省略可）
-wifi_listen = "0.0.0.0:7002"   # Wi-Fi リスナー（省略可）
+network_listen = "0.0.0.0:7002"   # LAN / Wi-Fi リスナー（省略可）
 connect_interval_ms   = 1500
 heartbeat_interval_ms = 1000
 ack_timeout_ms        = 2500
 max_hops              = 4
 
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
+
+[wifi]
+interface = "wlan0"
+auto_manage = true
+desired_mode = "child"
+hotspot_ssid = "CANweeb-Parent"
+hotspot_password = "canweeb1234"
+hotspot_connection_name = "CANweeb Hotspot"
+status_interval_ms = 2000
+
+[[wifi.fallback_networks]]
+ssid = "CANweeb-Parent"
+password = "canweeb1234"
+priority = 100
+
 [[peers]]
 node_id  = "node-main"
+role = "parent"
+relationship = "parent"
+preferred_transport_order = ["usb", "network"]
 usb_addr  = "192.168.7.1:7001"   # 省略可（USB なし環境では削除）
-wifi_addr = "192.168.49.1:7002"  # 省略可
+network_addr = "192.168.1.10:7002"  # discovery を使うなら通常不要
 tags = ["strategy"]
 ```
 
-**Wi-Fi のみ構成（USB なし）**:
+**LAN / Wi-Fi のみ構成（USB なし）**:
 
 ```toml
+[discovery]
+enabled = true
+
 [transport]
-wifi_listen = "0.0.0.0:7002"
+network_listen = "0.0.0.0:7002"
 # usb_listen は書かなければ起動しない
 
 [[peers]]
 node_id   = "node-main"
-wifi_addr = "192.168.1.100:7002"
+network_addr = "192.168.1.100:7002"  # discovery を使わない固定 IP 運用時のみ
 ```
 
 ## HTTP API
@@ -107,6 +158,13 @@ wifi_addr = "192.168.1.100:7002"
 | Method | Path | 説明 |
 |---|---|---|
 | GET | `/api/status` | ノード状態・ピア一覧 |
+| GET | `/api/wifi/status` | 自ノードの Wi-Fi 状態 |
+| POST | `/api/wifi/apply-mode` | `parent` / `child` / `ap` / `client` の自動適用 |
+| POST | `/api/wifi/hotspot/start` | 今すぐ AP を作成 |
+| POST | `/api/wifi/connect` | 指定 SSID に接続 |
+| POST | `/api/wifi/disconnect` | Wi-Fi 切断 |
+| GET | `/api/peer-policies` | peer 関係と transport 優先順 |
+| POST | `/api/peer-policies` | peer 関係と transport 優先順を更新 |
 | GET | `/api/inbox` | control inbox 一覧 |
 | GET | `/api/inbox/:id` | inbox 詳細 + payload base64 |
 | POST | `/api/messages` | メッセージ送信 |
@@ -168,9 +226,11 @@ g_ether
 # 例: 192.168.7.1/24
 ```
 
-### Wi-Fi Direct (wpa_cli) 例
+### 補助的な Wi-Fi 操作 (wpa_cli) 例
 
-WebUI の "Wi-Fi Direct / wpa_cli" パネルから直接操作できます。
+WebUI の `wpa_cli` パネルは残していますが、通常の LAN / ルーター配下運用では必須ではありません。
+
+親子デモ向けの簡単な操作は `examples/parent-ui/index.html` の管理画面から行う想定です。
 
 ```
 interface: wlan0
@@ -194,15 +254,16 @@ args: p2p_find
 - ルーティングはフラッディングです（経路学習は未実装）
 - 時刻同期は担保しません（PTP/NTP は別途必要）
 - 認証・暗号化は未実装です
-- Wi-Fi Direct の自動ペアリングは `wpa_cli` 手動操作が必要です
+- discovery は**同一 L2/LAN セグメント内**の自動発見です。サブネットを跨ぐ検出は行いません
+- UDP broadcast を遮断するネットワークでは `network_addr` を固定設定してください
 - systemd unit は同梱していません（`ExecStart` に本バイナリを指定して自分で作成してください）
 
 ## 用途の分担イメージ
 
 ```
 Ubuntu Server (strategy / AI)
-    ↕ USB Ethernet (主) / Wi-Fi (退避) via CANweeb
+    ↕ USB Ethernet (主) / LAN or Wi-Fi (退避) via CANweeb
 Raspberry Pi (sensor / GPIO / actuator)
-    ↕ Wi-Fi / その他 TCP
+    ↕ LAN / Wi-Fi / その他 TCP
 マイコン / 外部デバイス
 ```

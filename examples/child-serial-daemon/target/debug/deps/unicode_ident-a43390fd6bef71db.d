@@ -1,0 +1,8 @@
+/home/rinta/CANweeb/examples/child-serial-daemon/target/debug/deps/unicode_ident-a43390fd6bef71db.d: /home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs /home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs
+
+/home/rinta/CANweeb/examples/child-serial-daemon/target/debug/deps/libunicode_ident-a43390fd6bef71db.rlib: /home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs /home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs
+
+/home/rinta/CANweeb/examples/child-serial-daemon/target/debug/deps/libunicode_ident-a43390fd6bef71db.rmeta: /home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs /home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs
+
+/home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs:
+/home/rinta/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/tables.rs:

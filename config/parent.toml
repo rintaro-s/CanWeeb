@@ -1,0 +1,53 @@
+# ============================================================
+# Parent (ノートPC) 設定
+# ============================================================
+
+[node]
+node_id = "parent"
+role = "parent"
+tags = ["control", "ui"]
+
+[storage]
+root = "./data/parent"
+retention_seconds = 86400
+
+[web]
+# 親の WebUI は 8080 でホスト
+bind = "0.0.0.0:8080"
+
+[transport]
+# USB Ethernet でラズパイと接続（主経路）
+usb_listen = "192.168.7.1:7001"
+# 通常 LAN / Wi-Fi / ハブ / ルーター配下のネットワーク経路
+network_listen = "0.0.0.0:7002"
+connect_interval_ms = 1500
+heartbeat_interval_ms = 1000
+ack_timeout_ms = 2500
+max_hops = 4
+
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
+
+[wifi]
+interface = "wlan0"
+auto_manage = true
+desired_mode = "parent"
+hotspot_ssid = "CANweeb-Parent"
+hotspot_password = "canweeb1234"
+hotspot_connection_name = "CANweeb Hotspot"
+status_interval_ms = 2000
+
+[[peers]]
+node_id = "child"
+role = "child"
+relationship = "child"
+preferred_transport_order = ["usb", "network"]
+# ラズパイ側の USB Ethernet アドレス
+usb_addr = "192.168.7.2:7001"
+# LAN/Wi-Fi は discovery で自動検知するので通常は不要
+# network_addr = "192.168.1.20:7002"
+tags = ["robot", "actuator"]

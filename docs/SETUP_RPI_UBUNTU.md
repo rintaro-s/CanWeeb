@@ -5,10 +5,10 @@
 一番現実的なのは次の構成です。
 
 - Raspberry Pi と Ubuntu PC を USB で直結
-- Raspberry Pi と Ubuntu PC の両方で Wi-Fi Direct を有効化
-- CANweeb は USB と Wi-Fi の両方に対して待受 / 発信を行う
+- Raspberry Pi と Ubuntu PC を同じ LAN / Wi-Fi / ハブ / ルーター配下へ接続
+- CANweeb は USB と network の両方に対して待受 / 発信を行う
 
-USB は高速・低遅延な主経路、Wi-Fi Direct は切断時の退避経路です。
+USB は高速・低遅延な主経路、network は切断時の退避経路です。
 
 実運用では、さらにアプリケーション層で次の分離を行ってください。
 
@@ -37,9 +37,26 @@ Pi 側が USB OTG に対応している前提です。
 
 CANweeb の `usb_addr` / `usb_listen` はこの IP を使います。
 
-## 3. Wi-Fi Direct の考え方
+## 3. LAN / Wi-Fi と discovery の考え方
 
-CANweeb 自体は Wi-Fi Direct の association をゼロから実装していません。代わりに、Linux の標準系である `wpa_cli` を呼べるようにしています。
+CANweeb は通常の TCP/IP ネットワークで動きます。  
+同一 LAN であれば `discovery.enabled = true` により UDP broadcast で peer を自動検知できます。
+
+最小構成は次の通りです。
+
+```toml
+[transport]
+network_listen = "0.0.0.0:7002"
+
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
+```
+
+必要なら補助的に `wpa_cli` で Wi-Fi 接続を操作できます。
 
 代表的な操作例:
 
@@ -70,16 +87,23 @@ bind = "0.0.0.0:8080"
 
 [transport]
 usb_listen = "0.0.0.0:7001"
-wifi_listen = "0.0.0.0:7002"
+network_listen = "0.0.0.0:7002"
 connect_interval_ms = 1500
 heartbeat_interval_ms = 1000
 ack_timeout_ms = 2500
 max_hops = 8
 
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
+
 [[peers]]
 node_id = "node-b"
 usb_addr = "192.168.7.2:7001"
-wifi_addr = "192.168.49.2:7002"
+# network_addr = "192.168.1.20:7002"  # 固定 IP 運用時のみ
 ```
 
 ### Raspberry Pi 側
@@ -98,16 +122,23 @@ bind = "0.0.0.0:8080"
 
 [transport]
 usb_listen = "0.0.0.0:7001"
-wifi_listen = "0.0.0.0:7002"
+network_listen = "0.0.0.0:7002"
 connect_interval_ms = 1500
 heartbeat_interval_ms = 1000
 ack_timeout_ms = 2500
 max_hops = 8
 
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
+
 [[peers]]
 node_id = "node-a"
 usb_addr = "192.168.7.1:7001"
-wifi_addr = "192.168.49.1:7002"
+# network_addr = "192.168.1.10:7002"  # 固定 IP 運用時のみ
 ```
 
 ## 5. C ノードを増やす場合
@@ -155,18 +186,18 @@ CANweeb は全トラフィックを保存するわけではありません。
 そのため、少なくとも次には耐えます。
 
 - USB の一時切断時の `control` 再送
-- Wi-Fi の一時切断時の `control` 再送
+- network の一時切断時の `control` 再送
 - プロセス再起動後の未配送 `control` 再開
 
 `telemetry` / `stream` は low-latency 優先のため、切断中の分まで完全再送する設計ではありません。そこは購読側が「最新値を使う」前提で組むのが現実的です。
 
-ただし、ノード全体の電源断やストレージ障害、Wi-Fi Direct 自体の association 未回復までは自動で解決しません。そこは systemd と OS 側のネットワーク設定で補強してください。
+ただし、ノード全体の電源断やストレージ障害、LAN を跨ぐ discovery までは自動で解決しません。そこは systemd と OS 側のネットワーク設定で補強してください。
 
 ## 8. 実運用で推奨する補強
 
 - systemd サービス化
 - journald へのログ集約
-- `wpa_supplicant` / `NetworkManager` の固定化
+- `wpa_supplicant` / `NetworkManager` / DHCP の固定化
 - USB gadget の起動時自動設定
 - ハードウェア watchdog
 - ping / healthcheck を使った外部監視

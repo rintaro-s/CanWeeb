@@ -3,6 +3,7 @@ mod mesh;
 mod protocol;
 mod storage;
 mod web;
+mod wifi;
 
 use anyhow::Result;
 use clap::Parser;

@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parent Control Panel</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 2rem;
+      font-weight: 700;
+    }
+    .subtitle {
+      margin: 0 0 30px;
+      opacity: 0.9;
+      font-size: 0.95rem;
+    }
+    .grid {
+      display: grid;
+      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+    }
+    .card h2 {
+      margin: 0 0 16px;
+      font-size: 1.25rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ef4444;
+      animation: pulse 2s infinite;
+    }
+    .status-dot.online {
+      background: #22c55e;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      font-size: 0.9rem;
+    }
+    .info-row:last-child {
+      border-bottom: none;
+    }
+    .info-label {
+      opacity: 0.8;
+    }
+    .info-value {
+      font-weight: 600;
+      font-family: ui-monospace, monospace;
+    }
+    .btn {
+      width: 100%;
+      padding: 14px;
+      margin-top: 12px;
+      border: none;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+    .btn-on {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      color: white;
+    }
+    .btn-on:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(245, 158, 11, 0.4);
+    }
+    .btn-off {
+      background: linear-gradient(135deg, #6b7280, #4b5563);
+      color: white;
+    }
+    .btn-off:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(107, 114, 128, 0.4);
+    }
+    .btn:active {
+      transform: translateY(0);
+    }
+    .log {
+      margin-top: 16px;
+      padding: 12px;
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 8px;
+      max-height: 160px;
+      overflow-y: auto;
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+    }
+    .log-entry {
+      padding: 4px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .log-entry:last-child {
+      border-bottom: none;
+    }
+    .log-time {
+      opacity: 0.6;
+      margin-right: 8px;
+    }
+    .section-title {
+      margin: 24px 0 12px;
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+    .small {
+      font-size: 0.82rem;
+      opacity: 0.85;
+    }
+    .input, .select {
+      width: 100%;
+      margin-top: 8px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+    }
+    .input::placeholder {
+      color: rgba(255,255,255,0.6);
+    }
+    .btn-secondary {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: white;
+    }
+    .btn-secondary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(37, 99, 235, 0.4);
+    }
+    .btn-neutral {
+      background: linear-gradient(135deg, #0f766e, #0d9488);
+      color: white;
+    }
+    .btn-neutral:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(13, 148, 136, 0.4);
+    }
+    .mono {
+      font-family: ui-monospace, monospace;
+    }
+    .icon {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🖥️ Parent Control Panel</h1>
+    <p class="subtitle">ノートPC（Parent）→ Raspberry Pi（Child）制御システム</p>
+
+    <h2 class="section-title">ステータス</h2>
+
+    <div class="grid">
+      <!-- Parent Status -->
+      <div class="card">
+        <h2>
+          <span class="status-dot" id="parentDot"></span>
+          Parent (ノートPC)
+        </h2>
+        <div class="info-row">
+          <span class="info-label">Node ID</span>
+          <span class="info-value" id="parentNodeId">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Pending Queue</span>
+          <span class="info-value" id="parentQueue">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Inbox</span>
+          <span class="info-value" id="parentInbox">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">接続先</span>
+          <span class="info-value" id="parentPeers">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Wi-Fi Mode</span>
+          <span class="info-value" id="parentWifiMode">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Wi-Fi SSID</span>
+          <span class="info-value" id="parentWifiSsid">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">IP</span>
+          <span class="info-value" id="parentWifiIp">-</span>
+        </div>
+      </div>
+
+      <!-- Child Status -->
+      <div class="card">
+        <h2>
+          <span class="status-dot" id="childDot"></span>
+          Child (Raspberry Pi)
+        </h2>
+        <div class="info-row">
+          <span class="info-label">Node ID</span>
+          <span class="info-value">child</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">接続状態</span>
+          <span class="info-value" id="childStatus">unknown</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Transport</span>
+          <span class="info-value" id="childTransport">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Remote Addr</span>
+          <span class="info-value" id="childAddr">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Discovery</span>
+          <span class="info-value" id="childDiscovery">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Advertised Addr</span>
+          <span class="info-value" id="childAdvertisedAddr">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Child WebUI</span>
+          <span class="info-value" id="childWebUrl">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Power</span>
+          <span class="info-value" id="childPower">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Uptime</span>
+          <span class="info-value" id="childUptime">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Quality</span>
+          <span class="info-value" id="childQuality">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">RTT</span>
+          <span class="info-value" id="childRtt">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Wi-Fi</span>
+          <span class="info-value" id="childWifi">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Queue/Inbox</span>
+          <span class="info-value" id="childQueues">-</span>
+        </div>
+      </div>
+
+      <!-- LED Control -->
+      <div class="card">
+        <h2>💡 STM32 LED 制御</h2>
+        <p style="margin: 0 0 12px; opacity: 0.85; font-size: 0.9rem;">
+          Child に接続された STM32 の LED を ON/OFF します
+        </p>
+        <button class="btn btn-on" onclick="sendLedCommand('on')">
+          💡 LED ON
+        </button>
+        <button class="btn btn-off" onclick="sendLedCommand('off')">
+          🌙 LED OFF
+        </button>
+        <div class="log" id="commandLog"></div>
+      </div>
+
+      <div class="card">
+        <h2>📶 Parent Wi-Fi 制御</h2>
+        <p class="small">親を AP 化するか、手動で別 SSID に接続します。</p>
+        <button class="btn btn-secondary" onclick="applyWifiMode('parent')">親を自動 AP モードにする</button>
+        <button class="btn btn-neutral" onclick="applyWifiMode('child')">既知 AP 接続モードにする</button>
+        <button class="btn btn-secondary" onclick="startHotspot()">今すぐ AP 作成</button>
+        <input class="input" id="ssidInput" placeholder="接続する SSID" />
+        <input class="input" id="passwordInput" type="password" placeholder="パスワード（任意）" />
+        <button class="btn btn-neutral" onclick="connectWifiManually()">この SSID に接続</button>
+        <button class="btn btn-off" onclick="disconnectWifi()">Wi-Fi 切断</button>
+        <div class="log" id="wifiLog"></div>
+      </div>
+
+      <div class="card">
+        <h2>🧭 Child 関係 / 接続順序</h2>
+        <p class="small">親 UI から child の論理関係と transport 優先度を変更します。</p>
+        <label class="small" for="childRoleInput">Role</label>
+        <input class="input" id="childRoleInput" placeholder="child / robot / sensor" />
+        <label class="small" for="childRelationshipInput">Relationship</label>
+        <input class="input" id="childRelationshipInput" placeholder="child" />
+        <label class="small" for="childTransportOrderInput">Transport Order</label>
+        <input class="input mono" id="childTransportOrderInput" placeholder="usb,network" />
+        <button class="btn btn-secondary" onclick="saveChildPolicy()">関係と順序を保存</button>
+        <div class="log" id="policyLog"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const PARENT_API = 'http://localhost:8080';
+    let commandHistory = [];
+    let wifiHistory = [];
+    let policyHistory = [];
+
+    function log(msg) {
+      const now = new Date().toLocaleTimeString();
+      commandHistory.unshift({ time: now, msg });
+      if (commandHistory.length > 10) commandHistory.pop();
+      updateLog();
+    }
+
+    function updateLog() {
+      const logEl = document.getElementById('commandLog');
+      logEl.innerHTML = commandHistory
+        .map(e => `<div class="log-entry"><span class="log-time">${e.time}</span>${e.msg}</div>`)
+        .join('');
+    }
+
+    function pushHistory(target, msg) {
+      const now = new Date().toLocaleTimeString();
+      target.unshift({ time: now, msg });
+      if (target.length > 10) target.pop();
+    }
+
+    function renderHistory(target, elementId) {
+      const el = document.getElementById(elementId);
+      el.innerHTML = target.map(e => `<div class="log-entry"><span class="log-time">${e.time}</span>${e.msg}</div>`).join('');
+    }
+
+    function fmtDuration(ms) {
+      if (!ms && ms !== 0) return '-';
+      const sec = Math.floor(ms / 1000);
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      return `${h}h ${m}m ${s}s`;
+    }
+
+    async function sendLedCommand(cmd) {
+      try {
+        log(`🚀 送信中: ${cmd}`);
+        const res = await fetch(`${PARENT_API}/api/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target: 'node:child',
+            traffic_class: 'control',
+            subject: 'led_control',
+            content_type: 'text/plain',
+            text: cmd
+          })
+        });
+        const data = await res.json();
+        log(`✅ 送信完了 (${data.message_id.slice(0, 8)})`);
+      } catch (err) {
+        log(`❌ エラー: ${err.message}`);
+      }
+    }
+
+    async function refreshParentStatus() {
+      try {
+        const [statusRes, wifiRes, policyRes] = await Promise.all([
+          fetch(`${PARENT_API}/api/status`),
+          fetch(`${PARENT_API}/api/wifi/status`),
+          fetch(`${PARENT_API}/api/peer-policies`),
+        ]);
+        const data = await statusRes.json();
+        const wifi = await wifiRes.json();
+        const policies = await policyRes.json();
+        
+        document.getElementById('parentNodeId').textContent = data.node_id;
+        document.getElementById('parentQueue').textContent = data.pending_queue;
+        document.getElementById('parentInbox').textContent = data.inbox_items;
+        document.getElementById('parentDot').className = 'status-dot online';
+        document.getElementById('parentWifiMode').textContent = wifi.mode || '-';
+        document.getElementById('parentWifiSsid').textContent = wifi.active_ssid || '-';
+        document.getElementById('parentWifiIp').textContent = (wifi.ipv4_addresses || []).join(', ') || '-';
+
+        // Child peer 情報
+        const child = data.peers.find(p => p.node_id === 'child');
+        const childPolicy = policies.find(p => p.node_id === 'child');
+        if (childPolicy) {
+          document.getElementById('childRoleInput').value = childPolicy.role || '';
+          document.getElementById('childRelationshipInput').value = childPolicy.relationship || '';
+          document.getElementById('childTransportOrderInput').value = (childPolicy.preferred_transport_order || []).join(',');
+        }
+        if (child) {
+          document.getElementById('childDiscovery').textContent = child.discovered ? 'auto' : (child.configured ? 'static' : '-');
+          document.getElementById('childAdvertisedAddr').textContent = child.advertised_network_addr || '-';
+          document.getElementById('childPower').textContent = child.power_state || '-';
+          document.getElementById('childUptime').textContent = fmtDuration(child.uptime_ms);
+          document.getElementById('childQuality').textContent = child.connection_quality || '-';
+          document.getElementById('childRtt').textContent = child.last_rtt_ms != null ? `${child.last_rtt_ms} ms` : '-';
+          const wifiText = [child.remote_wifi_mode || '-', child.remote_wifi_ssid || '-', child.remote_wifi_signal != null ? `${child.remote_wifi_signal}%` : '-'].join(' / ');
+          document.getElementById('childWifi').textContent = wifiText;
+          const queueText = child.remote_pending_queue != null || child.remote_inbox_items != null
+            ? `${child.remote_pending_queue ?? '-'} / ${child.remote_inbox_items ?? '-'}`
+            : '-';
+          document.getElementById('childQueues').textContent = queueText;
+          if (child.advertised_web_url) {
+            document.getElementById('childWebUrl').innerHTML = `<a href="${child.advertised_web_url}" target="_blank" rel="noreferrer" style="color:#fff">${child.advertised_web_url}</a>`;
+          } else {
+            document.getElementById('childWebUrl').textContent = '-';
+          }
+        }
+        if (child && child.links.length > 0) {
+          document.getElementById('childDot').className = 'status-dot online';
+          document.getElementById('childStatus').textContent = 'connected';
+          const link = child.links[0];
+          document.getElementById('childTransport').textContent = link.transport;
+          document.getElementById('childAddr').textContent = link.remote_addr;
+          document.getElementById('parentPeers').textContent = `child (${link.transport})`;
+        } else {
+          document.getElementById('childDot').className = 'status-dot';
+          document.getElementById('childStatus').textContent = child ? 'discovered' : 'disconnected';
+          document.getElementById('childTransport').textContent = '-';
+          document.getElementById('childAddr').textContent = '-';
+          document.getElementById('parentPeers').textContent = child ? 'child (not connected)' : 'なし';
+        }
+      } catch (err) {
+        document.getElementById('parentDot').className = 'status-dot';
+        console.error('Parent status fetch error:', err);
+      }
+    }
+
+    async function applyWifiMode(mode) {
+      try {
+        const res = await fetch(`${PARENT_API}/api/wifi/apply-mode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode })
+        });
+        const data = await res.json();
+        pushHistory(wifiHistory, `mode=${mode} -> ${JSON.stringify(data.details || [])}`);
+        renderHistory(wifiHistory, 'wifiLog');
+        refreshParentStatus();
+      } catch (err) {
+        pushHistory(wifiHistory, `error: ${err.message}`);
+        renderHistory(wifiHistory, 'wifiLog');
+      }
+    }
+
+    async function startHotspot() {
+      try {
+        const res = await fetch(`${PARENT_API}/api/wifi/hotspot/start`, { method: 'POST' });
+        const data = await res.json();
+        pushHistory(wifiHistory, `hotspot: ${JSON.stringify(data.details || [])}`);
+        renderHistory(wifiHistory, 'wifiLog');
+        refreshParentStatus();
+      } catch (err) {
+        pushHistory(wifiHistory, `error: ${err.message}`);
+        renderHistory(wifiHistory, 'wifiLog');
+      }
+    }
+
+    async function connectWifiManually() {
+      try {
+        const ssid = document.getElementById('ssidInput').value.trim();
+        const password = document.getElementById('passwordInput').value;
+        const res = await fetch(`${PARENT_API}/api/wifi/connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ssid, password: password || null })
+        });
+        const data = await res.json();
+        pushHistory(wifiHistory, `connect ${ssid}: ${JSON.stringify(data.details || [])}`);
+        renderHistory(wifiHistory, 'wifiLog');
+        refreshParentStatus();
+      } catch (err) {
+        pushHistory(wifiHistory, `error: ${err.message}`);
+        renderHistory(wifiHistory, 'wifiLog');
+      }
+    }
+
+    async function disconnectWifi() {
+      try {
+        const res = await fetch(`${PARENT_API}/api/wifi/disconnect`, { method: 'POST' });
+        const data = await res.json();
+        pushHistory(wifiHistory, `disconnect: ${JSON.stringify(data.details || [])}`);
+        renderHistory(wifiHistory, 'wifiLog');
+        refreshParentStatus();
+      } catch (err) {
+        pushHistory(wifiHistory, `error: ${err.message}`);
+        renderHistory(wifiHistory, 'wifiLog');
+      }
+    }
+
+    async function saveChildPolicy() {
+      try {
+        const role = document.getElementById('childRoleInput').value.trim();
+        const relationship = document.getElementById('childRelationshipInput').value.trim() || 'child';
+        const preferred_transport_order = document.getElementById('childTransportOrderInput').value
+          .split(',')
+          .map(v => v.trim())
+          .filter(Boolean);
+        const res = await fetch(`${PARENT_API}/api/peer-policies`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            node_id: 'child',
+            role: role || null,
+            relationship,
+            preferred_transport_order,
+          })
+        });
+        const data = await res.json();
+        pushHistory(policyHistory, `saved: ${JSON.stringify(data)}`);
+        renderHistory(policyHistory, 'policyLog');
+        refreshParentStatus();
+      } catch (err) {
+        pushHistory(policyHistory, `error: ${err.message}`);
+        renderHistory(policyHistory, 'policyLog');
+      }
+    }
+
+    // 起動時とポーリング
+    refreshParentStatus();
+    setInterval(refreshParentStatus, 2000);
+  </script>
+</body>
+</html>

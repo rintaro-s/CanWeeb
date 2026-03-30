@@ -41,6 +41,9 @@ HelloFrame {
 }
 ```
 
+`TransportKind::Wifi` は wire format 上の名前で、実装上は **generic network transport** を意味します。  
+通常の Wi-Fi LAN / 有線 LAN / 直結 Ethernet / Wi-Fi AP 配下の TCP 経路でも同じ値を使います。
+
 `capabilities` の現在値: `["reliable-queue", "webui", "mesh-flood"]`
 
 ---
@@ -104,6 +107,28 @@ PingFrame { timestamp_ms: u64 }
 ```
 
 heartbeat_interval_ms ごとに送信。応答がない場合は接続タイムアウトとして切断する。
+
+---
+
+## LAN Discovery
+
+同一 LAN 内の peer 自動発見は、Frame とは別に UDP broadcast で行います。
+
+```json
+{
+  "version": 1,
+  "node_id": "node-pi",
+  "tags": ["robot", "sensor"],
+  "network_port": 7002,
+  "web_port": 8080,
+  "timestamp_ms": 1710000000000
+}
+```
+
+- 送信先: `discovery.announce_addr` (デフォルト `255.255.255.255:7060`)
+- 受信 bind: `discovery.bind` (デフォルト `0.0.0.0:7060`)
+- 受信側は **UDP 送信元 IP + network_port** から接続先 `network_addr` を生成する
+- `peer_ttl_ms` を超えて更新されない peer は stale として扱う
 
 ---
 
@@ -219,12 +244,12 @@ bulk_tx (cap: 1024)
 
 ## フェイルオーバー
 
-ピアごとに `usb` と `wifi` を独立したリンクとして保持します。
+ピアごとに `usb` と `network`（wire 上は `Wifi`）を独立したリンクとして保持します。
 
-送信優先順位: **USB > Wi-Fi**
+送信優先順位: **USB > network**
 
 USB が切断された場合:
-- `Control` メッセージはキューに残り、Wi-Fi リンクが存在すれば次の dispatch tick で再送される
+- `Control` メッセージはキューに残り、network リンクが存在すれば次の dispatch tick で再送される
 - `Telemetry` / `Stream` はベストエフォートのため、切断中に送れなかった分は失われる
 
 ---
