@@ -4,22 +4,22 @@ Rust 製のロボティクス向け多経路メッシュ通信デーモン。マ
 
 ## 設計方針
 
-- **トランスポート非依存** — USB Ethernet・通常 Wi-Fi LAN・Wi-Fi AP・有線 LAN、どれでも TCP が通れば動く
+- **トランスポート非依存** — 有線 LAN・通常 Wi-Fi LAN・Wi-Fi AP・USB Ethernet、どれでも TCP が通れば動く
 - **QoS 分離** — `control` / `telemetry` / `stream` を完全に別経路・別キューで扱う
 - **センサデータをディスクに落とさない** — 高頻度センサや画像データは SD / eMMC 寿命を消費しない
-- **フォールバック自動化** — USB が切れた場合、未 ACK の `control` は network 側へ自動再送
+- **フォールバック自動化** — 有線が切れた場合、未 ACK の `control` は network 側へ自動再送
 
 ## トランスポートの選び方
 
-CANweeb は **TCP が通る経路ならなんでも使えます**。USB Ethernet がなくても動きます。
+CANweeb は **TCP が通る経路ならなんでも使えます**。デフォルトでは **LAN ケーブルを主経路、Wi-Fi をフォールバック** として使うのが簡単です。
 
 | 経路 | 典型的な用途 | 設定 |
 |---|---|---|
-| USB gadget Ethernet (`192.168.7.x`) | Pi ↔ PC 間の主経路、最低遅延 | `usb_addr` |
-| 通常 Wi-Fi LAN / AP | USB なし環境・フォールバック | `network_addr` |
-| 有線 LAN | 机上テスト・チーム PC 間 | `network_addr` |
+| 有線 LAN | 直結テスト・机上テスト・主経路 | `network_addr` |
+| 通常 Wi-Fi LAN / AP | 有線切断時のフォールバック | `network_addr` |
+| USB gadget Ethernet (`192.168.7.x`) | 追加の別 transport が欲しい場合 | `usb_addr` |
 
-**USB がない環境**: `usb_addr` を省略して `network_addr` だけ設定すれば LAN / Wi-Fi のみで動きます。`usb_listen` / `network_listen` も片方だけで構いません。
+**いちばん簡単な構成**: 親と子を LAN ケーブルでつなぎ、親を `10.42.0.1/24`、子を `10.42.0.2/24` にして、`network_addr` だけ設定してください。
 
 ## 自動発見 / 自動ペアリング
 
@@ -34,6 +34,12 @@ CANweeb は **TCP が通る経路ならなんでも使えます**。USB Ethernet
 ## Wi-Fi 自動化
 
 通常の LAN discovery に加えて、`wifi` セクションで **親の自動 AP 化** と **子の既知 AP 自動接続** を行えます。
+
+推奨の既定運用は次です。
+
+- 普段は **LAN ケーブル / 同一有線 LAN** で通信
+- 有線の `network_addr` が通らなくなったら **Wi-Fi fallback** で通信継続
+- サンプル設定では parent が `CANweeb-Parent` を出し、child がそこへ接続します
 
 - 親ノード: `wifi.desired_mode = "parent"`
   - `nmcli device wifi hotspot` で AP を作成
@@ -64,6 +70,14 @@ CANweeb は **TCP が通る経路ならなんでも使えます**。USB Ethernet
   - その `wlan0` は親子通信用に使われます
   - **同じ `wlan0` 経由の既存インターネット接続は通常維持されません**
   - 親側でインターネットも維持したい場合は、**有線 LAN / USB Ethernet / 別 Wi-Fi インターフェース** を別途使ってください
+
+### 実運用でまず起動させるコツ
+
+- `network_listen = "0.0.0.0:7002"` が起動していれば、LAN / Wi-Fi 経由の通信待受はできています
+- サンプル設定では **有線 LAN 用の `network_addr` を先に試し**、見つからないときに discovery で見えた Wi-Fi 側へ落ちます
+- 親 AP の自動化に失敗した場合でも、**WebUI と network listener はそのまま起動することがあります**
+- 最短セットアップは、親子の Ethernet に `10.42.0.1/24` と `10.42.0.2/24` を入れて LAN ケーブルで直結する方法です
+- 親向け管理 UI は `http://<bind_addr>:8080/parent-ui/` で外部公開できます
 
 ## Traffic Class
 
@@ -104,6 +118,8 @@ cargo build --release
 
 WebUI: `http://<bind_addr>:8080`
 
+Parent UI: `http://<bind_addr>:8080/parent-ui/`
+
 ## 設定
 
 `config/example.toml` をコピーしてノードごとに編集してください。
@@ -122,7 +138,6 @@ retention_seconds = 86400
 bind = "0.0.0.0:8080"
 
 [transport]
-usb_listen  = "0.0.0.0:7001"   # USB Ethernet リスナー（省略可）
 network_listen = "0.0.0.0:7002"   # LAN / Wi-Fi リスナー（省略可）
 connect_interval_ms   = 1500
 heartbeat_interval_ms = 1000
@@ -154,25 +169,23 @@ priority = 100
 node_id  = "node-main"
 role = "parent"
 relationship = "parent"
-preferred_transport_order = ["usb", "network"]
-usb_addr  = "192.168.7.1:7001"   # 省略可（USB なし環境では削除）
-network_addr = "192.168.1.10:7002"  # discovery を使うなら通常不要
+preferred_transport_order = ["network"]
+network_addr = "10.42.0.1:7002"
 tags = ["strategy"]
 ```
 
-**LAN / Wi-Fi のみ構成（USB なし）**:
+**親子デモの最短構成**:
 
 ```toml
-[discovery]
-enabled = true
+# parent 側 OS
+# ip addr add 10.42.0.1/24 dev eth0
 
-[transport]
+# child 側 OS
+# ip addr add 10.42.0.2/24 dev eth0
+
+# CANweeb 側
 network_listen = "0.0.0.0:7002"
-# usb_listen は書かなければ起動しない
-
-[[peers]]
-node_id   = "node-main"
-network_addr = "192.168.1.100:7002"  # discovery を使わない固定 IP 運用時のみ
+network_addr = "10.42.0.1:7002"
 ```
 
 ## HTTP API
@@ -227,26 +240,21 @@ network_addr = "192.168.1.100:7002"  # discovery を使わない固定 IP 運用
 
 ## 推奨ネットワーク構成
 
-### Raspberry Pi (USB gadget Ethernet 使用)
+### Parent / Child を LAN ケーブルで直結する場合
 
 ```bash
-# /boot/firmware/config.txt
-dtoverlay=dwc2
+# Parent
+ip addr add 10.42.0.1/24 dev eth0
 
-# /etc/modules
-dwc2
-g_ether
-
-# usb0 に固定 IP を振る (NetworkManager / systemd-networkd)
-# 例: 192.168.7.2/24
+# Child
+ip addr add 10.42.0.2/24 dev eth0
 ```
 
-### Ubuntu Server 側
+この状態で CANweeb を起動すると、有線が主経路になります。
 
-```bash
-# USB Ethernet が usb0 に現れたら固定 IP を振る
-# 例: 192.168.7.1/24
-```
+### USB Ethernet を使いたい場合
+
+`usb_listen` / `usb_addr` を追加すれば併用できますが、サンプルの既定値では使いません。
 
 ### 補助的な Wi-Fi 操作 (wpa_cli) 例
 
@@ -284,7 +292,7 @@ args: p2p_find
 
 ```
 Ubuntu Server (strategy / AI)
-    ↕ USB Ethernet (主) / LAN or Wi-Fi (退避) via CANweeb
+    ↕ LAN cable (主) / Wi-Fi fallback via CANweeb
 Raspberry Pi (sensor / GPIO / actuator)
     ↕ LAN / Wi-Fi / その他 TCP
 マイコン / 外部デバイス

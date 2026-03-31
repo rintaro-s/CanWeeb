@@ -820,25 +820,31 @@ impl Runtime {
     async fn network_connector_loop(self: Arc<Self>, peer_id: String) {
         let interval = Duration::from_millis(self.config.transport.connect_interval_ms);
         loop {
-            if self.peers.has_link(&peer_id, &TransportKind::Wifi).await {
+            let addrs = self.resolve_network_addrs(&peer_id).await;
+            if addrs.is_empty() {
                 sleep(interval).await;
                 continue;
             }
 
-            let Some(addr) = self.resolve_network_addr(&peer_id).await else {
-                sleep(interval).await;
-                continue;
-            };
-
-            match TcpStream::connect(&addr).await {
-                Ok(stream) => {
-                    info!(peer_id = %peer_id, %addr, transport = "network", "outbound network transport connected");
-                    if let Err(error) = self.clone().run_connection(stream, TransportKind::Wifi, Some(peer_id.clone())).await {
-                        warn!(%error, peer_id = %peer_id, %addr, transport = "network", "outbound network connection ended");
-                    }
+            if let Some(active_addr) = self.peers.network_remote_addr(&peer_id).await {
+                if addrs.first().is_some_and(|preferred| preferred == &active_addr) {
+                    sleep(interval).await;
+                    continue;
                 }
-                Err(error) => {
-                    debug!(%error, peer_id = %peer_id, %addr, transport = "network", "network connect attempt failed");
+            }
+
+            for addr in addrs {
+                match TcpStream::connect(&addr).await {
+                    Ok(stream) => {
+                        info!(peer_id = %peer_id, %addr, transport = "network", "outbound network transport connected");
+                        if let Err(error) = self.clone().run_connection(stream, TransportKind::Wifi, Some(peer_id.clone())).await {
+                            warn!(%error, peer_id = %peer_id, %addr, transport = "network", "outbound network connection ended");
+                        }
+                        break;
+                    }
+                    Err(error) => {
+                        debug!(%error, peer_id = %peer_id, %addr, transport = "network", "network connect attempt failed");
+                    }
                 }
             }
 
@@ -1045,18 +1051,28 @@ impl Runtime {
         });
     }
 
-    async fn resolve_network_addr(&self, peer_id: &str) -> Option<String> {
-        let now = now_ms();
-        if let Some(discovered) = self.discovered_peers.get(peer_id) {
-            if now.saturating_sub(discovered.last_seen_ms) <= self.config.discovery.peer_ttl_ms {
-                return Some(discovered.network_addr.clone());
-            }
-        }
-        self.config
+    async fn resolve_network_addrs(&self, peer_id: &str) -> Vec<String> {
+        let mut addrs = Vec::new();
+        if let Some(configured_addr) = self
+            .config
             .peers
             .iter()
             .find(|peer| peer.node_id == peer_id)
             .and_then(|peer| peer.network_addr.clone())
+        {
+            addrs.push(configured_addr);
+        }
+
+        let now = now_ms();
+        if let Some(discovered) = self.discovered_peers.get(peer_id) {
+            if now.saturating_sub(discovered.last_seen_ms) <= self.config.discovery.peer_ttl_ms
+                && !addrs.iter().any(|addr| addr == &discovered.network_addr)
+            {
+                addrs.push(discovered.network_addr.clone());
+            }
+        }
+
+        addrs
     }
 
     fn parse_port(addr: &str) -> Option<u16> {
@@ -1191,6 +1207,11 @@ impl PeerRegistry {
         })
     }
 
+    async fn network_remote_addr(&self, peer_id: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        inner.get(peer_id).and_then(|entry| entry.wifi.as_ref().map(|link| link.remote_addr.clone()))
+    }
+
     async fn best_sender(&self, peer_id: &str, transport_order: &[String]) -> Option<LinkSender> {
         let inner = self.inner.read().await;
         let entry = inner.get(peer_id)?;
@@ -1310,7 +1331,7 @@ fn peer_priority(peer_id: &str, target: Option<&DeliveryTarget>) -> u8 {
 }
 
 fn default_transport_order() -> Vec<String> {
-    vec!["usb".to_string(), "network".to_string()]
+    vec!["network".to_string(), "usb".to_string()]
 }
 
 fn normalize_transport_order(items: &[String]) -> Vec<String> {

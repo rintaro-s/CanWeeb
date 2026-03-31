@@ -12,8 +12,8 @@
 │    → 両デバイス情報表示                    │
 │    → 子の STM32 LED を ON/OFF             │
 └─────────────┬───────────────────────────┘
-              │ USB Ethernet (192.168.7.x)
-              │ または LAN / Wi-Fi (auto discovery)
+              │ LAN ケーブル直結 (10.42.0.x)
+              │ 切断されたら Wi-Fi fallback
 ┌─────────────▼───────────────────────────┐
 │ Child (Raspberry Pi)                    │
 │  - CANweeb デーモン (port 8080)          │
@@ -37,14 +37,16 @@
 
 - `parent.toml`
   - `role = "parent"`
+  - 普段は LAN ケーブル側の `network_addr = "10.42.0.2:7002"` を優先して child と通信
   - `wifi.desired_mode = "parent"`
-  - 起動後に `nmcli device wifi hotspot ...` を使って親 AP を作成
+  - 起動後に `nmcli device wifi hotspot ...` を使って親 AP を作成し、ケーブルが切れたときの受け口を用意
   - `wlan0` ですでに別の Wi-Fi に繋がっていた場合、その接続は AP 用に切り替わる
 
 - `child.toml`
   - `role = "child"`
+  - 普段は LAN ケーブル側の `network_addr = "10.42.0.1:7002"` を優先して親と通信
   - `wifi.desired_mode = "child"`
-  - `wifi.fallback_networks` の優先順で接続を試行
+  - LAN 側が見えなくなったら `wifi.fallback_networks` の優先順で接続を試行
   - デフォルトでは `CANweeb-Parent` へ接続
   - 起動時点で別の Wi-Fi に繋がっていても、より優先度の高い設定済み SSID が見えていればそちらへ切り替える
 
@@ -73,97 +75,52 @@ priority = 200
 
 このサンプルは **親を起動して WebUI を開き、子を起動するだけ** で試せるようにしています。
 
-- **親**: `config/parent.toml` により `wlan0` を自動 AP モードで管理
-- **子**: `config/child.toml` により `CANweeb-Parent` へ自動接続
+- **親**: `config/parent.toml` により LAN ケーブルを主経路、`wlan0` を fallback 用 AP として管理
+- **子**: `config/child.toml` により LAN ケーブルを主経路、`CANweeb-Parent` を fallback 先として管理
 - **両方**: discovery で peer を自動検知
 - **親 UI**: child の生存確認、電源状態、Wi-Fi 状態、RTT、接続品質、transport 優先順を表示
 
-既存の家庭内 LAN / ルーター / LAN ハブを使いたい場合は、親を AP にせず、親子を同じ LAN に参加させればそのまま動きます。
+最短で試すなら、**親の Ethernet と子の Ethernet を LAN ケーブルで 1 本つなぐ**だけです。
+
+そのうえで OS 側に次の固定 IP を入れてください。
+
+- **Parent の Ethernet**: `10.42.0.1/24`
+- **Child の Ethernet**: `10.42.0.2/24`
+
+これで通常は **LAN ケーブル経由** になり、ケーブルが切れたら **親 AP ↔ child Wi-Fi** へ寄ります。
 
 ### 1. ネットワーク設定
 
-このサンプルは **USB Ethernet がなくても動きます**。次のどれでも使えます。
+このサンプルは **USB Ethernet を使いません**。次の順番で使います。
 
-- **USB Ethernet + LAN/Wi-Fi fallback**
-- **LAN ハブ経由の有線接続**
-- **既存 Wi-Fi / AP 経由の接続**
-- **親が自動 AP、子が自動接続**
+- **LAN ケーブル直結 / 同一有線 LAN**
+- **親が自動 AP、子が自動接続する Wi-Fi fallback**
 
 基本は `discovery.enabled = true` のままにしておけば、固定 IP を持たなくても peer を見つけられます。
 
 #### Parent (ノートPC)
 
-Parent 側は、接続方法に応じて 1 つだけ設定すれば十分です。
-
-##### USB Ethernet を使う場合
-
-USB Ethernet インターフェースに固定 IP を割り当てます。
+Parent 側は Ethernet に固定 IP を 1 つ入れるだけです。
 
 ```bash
-# USB ケーブルでラズパイと接続すると usb0 または enx... が現れる
-ip addr add 192.168.7.1/24 dev usb0
-
-# または NetworkManager で設定
-nmcli connection modify usb0 ipv4.addresses 192.168.7.1/24
-nmcli connection modify usb0 ipv4.method manual
-nmcli connection up usb0
-```
-
-##### LAN ハブ / 既存 Wi-Fi を使う場合
-
-同じ LAN に入っていれば、親子ともに固定 IP は必須ではありません。
-
-```bash
-# 例: 既存の LAN に接続済みであれば discovery だけで接続可能
-ip addr show
+ip addr add 10.42.0.1/24 dev eth0
+# NetworkManager を使う場合は eth0 を実際の有線 IF 名に置き換える
 ```
 
 #### Child (Raspberry Pi)
 
-Child 側も、USB gadget を使う場合と使わない場合で分かれます。
-
-##### USB gadget Ethernet を使う場合
-
-USB gadget Ethernet を有効化します。
+Child 側も Ethernet に固定 IP を 1 つ入れるだけです。
 
 ```bash
-# /boot/firmware/config.txt に追記
-dtoverlay=dwc2
-
-# /etc/modules に追記
-dwc2
-g_ether
-
-# 再起動後、usb0 に固定 IP を設定
-sudo ip addr add 192.168.7.2/24 dev usb0
-sudo ip link set usb0 up
-
-# または /etc/network/interfaces に記載
-# auto usb0
-# iface usb0 inet static
-#     address 192.168.7.2
-#     netmask 255.255.255.0
-```
-
-##### LAN ハブ / Wi-Fi を使う場合
-
-USB gadget は不要です。`config/child.toml` の `wifi` 設定を有効にするか、通常の LAN に参加してください。
-
-```bash
-# 例: 通常の LAN / Wi-Fi に参加していれば、CANweeb は discovery で peer を見つけます
-ip addr show
-nmcli device status
+sudo ip addr add 10.42.0.2/24 dev eth0
+sudo ip link set eth0 up
 ```
 
 疎通確認:
 
 ```bash
-# Parent から: USB Ethernet の場合
-ping 192.168.7.2
-
-# 既存 LAN / Wi-Fi の場合は、相手の LAN 側アドレスまたは discovery で見えたアドレスへ ping
-# 例:
-# ping 192.168.1.10
+# Parent から
+ping 10.42.0.2
 ```
 
 ---
@@ -219,8 +176,9 @@ cd /home/rinta/CANweeb
 ./target/release/canweeb --config config/parent.toml
 
 # Terminal 2: 親管理 WebUI をブラウザで開く
-xdg-open examples/parent-ui/index.html
-# または http://localhost:8080 で CANweeb の WebUI も使えます
+xdg-open http://localhost:8080/parent-ui/
+# 同じ LAN 上の別 PC / スマホからも http://<parent-ip>:8080/parent-ui/ でアクセス可能
+# CANweeb の標準 WebUI は http://localhost:8080/
 ```
 
 親 UI でできること:
@@ -252,12 +210,12 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
 ## 使い方
 
 1. **Parent 管理 WebUI を開く**  
-   `examples/parent-ui/index.html` をブラウザで開きます。
+   `http://<parent-ip>:8080/parent-ui/` をブラウザで開きます。
 
 2. **接続状態を確認**  
    - Parent (ノートPC) のステータスが緑色の点で表示されます
    - Child (Raspberry Pi) の接続状態が表示されます
-   - Transport が "usb" と表示されれば USB Ethernet 経由で接続中です
+   - Transport が `network` なら、LAN ケーブルまたは Wi-Fi fallback のどちらかで接続中です
    - Quality / RTT / Wi-Fi / Queue/Inbox で child の状態が見られます
 
 3. **LED を制御**  
@@ -266,7 +224,7 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
 
 4. **Wi-Fi / ノード関係を操作**  
    - 親を AP 化する
-   - child の接続順序を `usb,network` などで変更する
+   - child の接続順序を `network` 優先で変更する
    - role / relationship を親 UI から変更する
 
 5. **コマンドログを確認**  
@@ -281,7 +239,7 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
 1. ネットワークの疎通確認
    ```bash
    # Parent から
-   ping 192.168.7.2
+   ping 10.42.0.2
    ```
 
 2. CANweeb のログを確認
@@ -291,11 +249,46 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
    # "peer registered" が出れば接続成功
    ```
 
+   次のログの意味:
+
+   - `listener started addr=0.0.0.0:7002 transport=Wifi`
+     - network listener は起動済みです
+   - `web ui started bind_addr=0.0.0.0:8080`
+     - WebUI は起動済みです
+   - `failed to start hotspot on wlan0`
+     - 親 AP 化だけ失敗しています
+   - `failed to connect wlan0 to CANweeb-Parent`
+     - 子は親 AP を見つけられていないか、親 AP が未起動です
+
 3. ファイアウォールの確認
    ```bash
-   # ポート 7001 が開いているか確認
-   sudo ufw allow 7001/tcp
+   # ポート 7002 / 7060 / 8080 が開いているか確認
+   sudo ufw allow 7002/tcp
+   sudo ufw allow 7060/udp
+   sudo ufw allow 8080/tcp
    ```
+
+4. 親 AP が立たない場合
+   ```bash
+   nmcli device status
+   nmcli radio wifi
+   nmcli device wifi list ifname wlan0
+   nmcli device wifi hotspot ifname wlan0 con-name "CANweeb Hotspot" ssid "CANweeb-Parent" password "canweeb1234"
+   ```
+
+   これが失敗する場合は、CANweeb の問題ではなく次のどれかです。
+
+   - `NetworkManager` / `nmcli` が使えない
+   - `wlan0` が存在しない
+   - Wi-Fi アダプタ / ドライバが AP モード非対応
+   - 権限不足
+   - 既存の接続管理と競合している
+
+5. LAN ケーブル優先でまず動かす
+   - 親 Ethernet に `10.42.0.1/24`
+   - 子 Ethernet に `10.42.0.2/24`
+   - `ping 10.42.0.2` が通ることを確認
+   - その後に `http://<parent-ip>:8080/parent-ui/` で状態確認
 
 ### LED が反応しない
 
@@ -387,7 +380,7 @@ match command.as_str() {
      "text": "on"
    }
    ```
-3. Parent CANweeb → Child CANweeb へメッセージ転送（USB Ethernet 優先）
+3. Parent CANweeb → Child CANweeb へメッセージ転送（LAN ケーブル優先、切断時は Wi-Fi fallback）
 4. Child CANweeb が inbox に保存
 5. child-serial-daemon が inbox をポーリング（500ms 間隔）
 6. subject が "led_control" のメッセージを検出
@@ -408,20 +401,16 @@ match command.as_str() {
 
 ## LAN / Wi-Fi フォールバックと自動発見
 
-USB が切断された場合、自動的に `network` 経路へフォールバックします。  
-同一 LAN 内では discovery により `network_addr` を固定設定しなくても自動接続されます。
+デフォルトでは **LAN ケーブル用に設定した `network_addr` を先に試し**、それが通らないときに **discovery で見つかった Wi-Fi 側アドレス** へフォールバックします。
 
-固定 IP 運用にしたい場合だけ `network_addr` を指定します:
+サンプルでは次の固定 IP を想定しています:
 
 ```toml
-[discovery]
-enabled = true
-announce_addr = "255.255.255.255:7060"
+# parent.toml
+network_addr = "10.42.0.2:7002"
 
-[[peers]]
-node_id = "child"
-usb_addr = "192.168.7.2:7001"
-# network_addr = "192.168.1.20:7002"  # 固定 IP 運用時のみ
+# child.toml
+network_addr = "10.42.0.1:7002"
 ```
 
 親 WebUI では child の `discovered` 状態、`advertised_network_addr`、`Child WebUI` URL も表示されます。

@@ -16,9 +16,7 @@ retention_seconds = 86400
 bind = "0.0.0.0:8080"
 
 [transport]
-# USB Ethernet でラズパイと接続（主経路）
-usb_listen = "192.168.7.1:7001"
-# 通常 LAN / Wi-Fi / ハブ / ルーター配下のネットワーク経路
+# LAN ケーブル直結 / 同一 LAN 上の有線 Ethernet を主経路にする
 network_listen = "0.0.0.0:7002"
 connect_interval_ms = 1500
 heartbeat_interval_ms = 1000
@@ -34,9 +32,9 @@ peer_ttl_ms = 8000
 
 [wifi]
 interface = "wlan0"
-# 既存の同一 LAN / 家庭内 Wi-Fi をそのまま使いたい場合は false にする
+# 有線が切れたら、この interface で親 AP を出して child を受ける
 auto_manage = true
-# parent を指定すると、この interface は起動時に AP 用として使われる
+# parent を指定すると、この interface は AP 用として使われる
 desired_mode = "parent"
 hotspot_ssid = "CANweeb-Parent"
 hotspot_password = "canweeb1234"
@@ -47,9 +45,7 @@ status_interval_ms = 2000
 node_id = "child"
 role = "child"
 relationship = "child"
-preferred_transport_order = ["usb", "network"]
-# ラズパイ側の USB Ethernet アドレス
-usb_addr = "192.168.7.2:7001"
-# LAN/Wi-Fi は discovery で自動検知するので通常は不要
-# network_addr = "192.168.1.20:7002"
+preferred_transport_order = ["network"]
+# LAN ケーブル直結の child 側 Ethernet アドレス
+network_addr = "10.42.0.2:7002"
 tags = ["robot", "actuator"]

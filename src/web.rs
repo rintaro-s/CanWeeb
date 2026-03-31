@@ -19,6 +19,9 @@ use uuid::Uuid;
 pub async fn serve(runtime: Arc<Runtime>) -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
+        .route("/parent-ui", get(parent_ui))
+        .route("/parent-ui/", get(parent_ui))
+        .route("/parent-ui/index.html", get(parent_ui))
         .route("/api/status", get(status))
         .route("/api/wifi/status", get(wifi_status))
         .route("/api/wifi/apply-mode", post(apply_wifi_mode))
@@ -49,6 +52,10 @@ pub async fn serve(runtime: Arc<Runtime>) -> Result<()> {
 
 async fn index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn parent_ui() -> Html<&'static str> {
+    Html(PARENT_UI_HTML)
 }
 
 async fn status(State(runtime): State<Arc<Runtime>>) -> Json<crate::mesh::RuntimeStatus> {
@@ -787,3 +794,5 @@ boot();
 </body>
 </html>
 "##;
+
+const PARENT_UI_HTML: &str = include_str!("../examples/parent-ui/index.html");

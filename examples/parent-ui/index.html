@@ -327,7 +327,9 @@
   </div>
 
   <script>
-    const PARENT_API = 'http://localhost:8080';
+    const apiParam = new URLSearchParams(window.location.search).get('api');
+    const defaultApi = window.location.protocol === 'file:' ? 'http://localhost:8080' : window.location.origin;
+    const PARENT_API = (apiParam || defaultApi).replace(/\/$/, '');
     let commandHistory = [];
     let wifiHistory = [];
     let policyHistory = [];

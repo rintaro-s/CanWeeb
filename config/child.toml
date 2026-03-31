@@ -16,9 +16,7 @@ retention_seconds = 86400
 bind = "0.0.0.0:8080"
 
 [transport]
-# USB Ethernet でノートPC と接続（主経路）
-usb_listen = "192.168.7.2:7001"
-# 通常 LAN / Wi-Fi / ハブ / ルーター配下のネットワーク経路
+# LAN ケーブル直結 / 同一 LAN 上の有線 Ethernet を主経路にする
 network_listen = "0.0.0.0:7002"
 connect_interval_ms = 1500
 heartbeat_interval_ms = 1000
@@ -34,6 +32,7 @@ peer_ttl_ms = 8000
 
 [wifi]
 interface = "wlan0"
+# 有線が切れたら fallback_networks の優先順で親 AP へ接続する
 auto_manage = true
 desired_mode = "child"
 hotspot_ssid = "CANweeb-Parent"
@@ -51,9 +50,7 @@ priority = 100
 node_id = "parent"
 role = "parent"
 relationship = "parent"
-preferred_transport_order = ["usb", "network"]
-# ノートPC 側の USB Ethernet アドレス
-usb_addr = "192.168.7.1:7001"
-# LAN/Wi-Fi は discovery で自動検知するので通常は不要
-# network_addr = "192.168.1.10:7002"
+preferred_transport_order = ["network"]
+# LAN ケーブル直結の親側 Ethernet アドレス
+network_addr = "10.42.0.1:7002"
 tags = ["control", "ui"]
