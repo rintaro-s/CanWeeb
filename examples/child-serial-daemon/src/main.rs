@@ -14,6 +14,10 @@ struct InboxItem {
     message_id: String,
     subject: String,
     #[serde(default)]
+    created_at_ms: u64,
+    #[serde(default)]
+    received_at_ms: u64,
+    #[serde(default)]
     preview: String,
 }
 
@@ -43,9 +47,19 @@ async fn main() -> Result<()> {
 
     let client = reqwest::Client::new();
     let mut processed_ids = std::collections::HashSet::<String>::new();
+    let mut newest_seen_ms = initial_inbox_watermark(&client, &canweeb_api).await.unwrap_or(0);
 
     loop {
-        match poll_and_process(&client, &canweeb_api, &serial_port, baud_rate, &mut processed_ids).await {
+        match poll_and_process(
+            &client,
+            &canweeb_api,
+            &serial_port,
+            baud_rate,
+            &mut processed_ids,
+            &mut newest_seen_ms,
+        )
+        .await
+        {
             Ok(()) => {}
             Err(e) => {
                 warn!("Poll error: {:#}", e);
@@ -61,6 +75,7 @@ async fn poll_and_process(
     serial_port: &str,
     baud_rate: u32,
     processed_ids: &mut std::collections::HashSet<String>,
+    newest_seen_ms: &mut u64,
 ) -> Result<()> {
     // inbox 一覧取得
     let inbox_url = format!("{}/api/inbox", api_base);
@@ -73,60 +88,82 @@ async fn poll_and_process(
         .await
         .context("failed to parse inbox")?;
 
-    for item in items {
-        if item.subject != "led_control" {
-            continue;
-        }
-        if processed_ids.contains(&item.message_id) {
-            continue;
-        }
+    let selected = items
+        .into_iter()
+        .filter(|item| item.subject == "led_control")
+        .filter(|item| !processed_ids.contains(&item.message_id))
+        .filter(|item| item.received_at_ms > *newest_seen_ms)
+        .max_by_key(|item| (item.received_at_ms, item.created_at_ms));
 
-        info!("新規 led_control メッセージ: {}", item.message_id);
+    let Some(item) = selected else {
+        return Ok(());
+    };
+
+    info!("新規 led_control メッセージ: {}", item.message_id);
 
         // 詳細取得
-        let detail_url = format!("{}/api/inbox/{}", api_base, item.message_id);
-        let detail: InboxDetail = match client.get(&detail_url).send().await {
-            Ok(res) => match res.json().await {
-                Ok(d) => d,
-                Err(e) => {
-                    warn!("failed to parse detail: {:#}", e);
-                    continue;
-                }
-            },
+    let detail_url = format!("{}/api/inbox/{}", api_base, item.message_id);
+    let detail: InboxDetail = match client.get(&detail_url).send().await {
+        Ok(res) => match res.json().await {
+            Ok(d) => d,
             Err(e) => {
-                warn!("failed to fetch detail: {:#}", e);
-                continue;
+                warn!("failed to parse detail: {:#}", e);
+                return Ok(());
             }
-        };
+        },
+        Err(e) => {
+            warn!("failed to fetch detail: {:#}", e);
+            return Ok(());
+        }
+    };
 
-        let command = extract_command(&detail).unwrap_or_default();
-        info!("LED コマンド: {}", command);
+    let command = extract_command(&detail).unwrap_or_default();
+    info!("LED コマンド: {}", command);
 
-        match command.as_str() {
-            "on" | "off" => {
-                if let Err(e) = send_serial(serial_port, baud_rate, &command) {
-                    error!("Serial write error: {:#}", e);
-                } else {
-                    info!("✅ Serial sent: {}", command);
-                }
-            }
-            _ => {
-                warn!("Unknown command: {}", command);
+    match command.as_str() {
+        "on" | "off" => {
+            if let Err(e) = send_serial(serial_port, baud_rate, &command) {
+                error!("Serial write error: {:#}", e);
+            } else {
+                info!("✅ Serial sent: {}", command);
             }
         }
+        _ => {
+            warn!("Unknown command: {}", command);
+        }
+    }
 
-        processed_ids.insert(item.message_id.clone());
+    processed_ids.insert(item.message_id.clone());
+    *newest_seen_ms = (*newest_seen_ms).max(item.received_at_ms.max(item.created_at_ms));
 
-        // 処理済み ID が 1000 件を超えたら古いものを削除
-        if processed_ids.len() > 1000 {
-            let to_remove: Vec<String> = processed_ids.iter().take(500).cloned().collect();
-            for id in to_remove {
-                processed_ids.remove(&id);
-            }
+    // 処理済み ID が 1000 件を超えたら古いものを削除
+    if processed_ids.len() > 1000 {
+        let to_remove: Vec<String> = processed_ids.iter().take(500).cloned().collect();
+        for id in to_remove {
+            processed_ids.remove(&id);
         }
     }
 
     Ok(())
+}
+
+async fn initial_inbox_watermark(client: &reqwest::Client, api_base: &str) -> Result<u64> {
+    let inbox_url = format!("{}/api/inbox", api_base);
+    let items: Vec<InboxItem> = client
+        .get(&inbox_url)
+        .send()
+        .await
+        .context("failed to fetch inbox for initial watermark")?
+        .json()
+        .await
+        .context("failed to parse inbox for initial watermark")?;
+
+    Ok(items
+        .into_iter()
+        .filter(|item| item.subject == "led_control")
+        .map(|item| item.received_at_ms.max(item.created_at_ms))
+        .max()
+        .unwrap_or(0))
 }
 
 fn extract_command(detail: &InboxDetail) -> Option<String> {

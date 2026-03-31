@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Arc;
+use tokio::process::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, RwLock};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -117,7 +118,7 @@ struct LinkSender {
 
 #[derive(Clone, Debug)]
 struct DiscoveredPeer {
-    network_addr: String,
+    network_addrs: Vec<String>,
     web_url: Option<String>,
     tags: Vec<String>,
     last_seen_ms: u64,
@@ -129,6 +130,8 @@ struct DiscoveryPacket {
     node_id: String,
     tags: Vec<String>,
     network_port: Option<u16>,
+    #[serde(default)]
+    network_addrs: Vec<String>,
     web_port: Option<u16>,
     timestamp_ms: u64,
 }
@@ -382,6 +385,7 @@ impl Runtime {
         let (pending_queue, inbox_items) = self.storage.counts().await;
         let link_map = self.peers.snapshot().await;
         let mut peer_map = HashMap::<String, PeerStatus>::new();
+        let report_ttl_ms = self.node_report_ttl_ms();
 
         for peer in &self.config.peers {
             let policy = self.peer_policy_for(&peer.node_id);
@@ -425,7 +429,7 @@ impl Runtime {
                     }
                     peer.discovered = true;
                     peer.last_seen_ms = Some(info.last_seen_ms);
-                    peer.advertised_network_addr = Some(info.network_addr.clone());
+                    peer.advertised_network_addr = info.network_addrs.first().cloned();
                     peer.advertised_web_url = info.web_url.clone();
                 })
                 .or_insert(PeerStatus {
@@ -448,7 +452,7 @@ impl Runtime {
                     remote_wifi_signal: None,
                     connection_quality: "unknown".to_string(),
                     last_rtt_ms: None,
-                    advertised_network_addr: Some(info.network_addr),
+                    advertised_network_addr: info.network_addrs.first().cloned(),
                     advertised_web_url: info.web_url,
                     links: Vec::new(),
                 });
@@ -503,8 +507,8 @@ impl Runtime {
             }
             peer.alive = !peer.links.is_empty()
                 || peer
-                    .last_seen_ms
-                    .is_some_and(|seen| now_ms().saturating_sub(seen) <= self.config.discovery.peer_ttl_ms);
+                    .last_report_ms
+                    .is_some_and(|seen| now_ms().saturating_sub(seen) <= report_ttl_ms);
             if peer.alive && peer.power_state == "unknown" {
                 peer.power_state = "awake".to_string();
             }
@@ -622,9 +626,10 @@ impl Runtime {
 
         info!(peer_id = %peer_id, %remote_addr, ?transport, "peer registered");
 
+        let idle_timeout = self.link_idle_timeout();
         let result = self
             .clone()
-            .read_connection_loop(&mut reader, &peer_id, &transport, &tx)
+            .read_connection_loop(&mut reader, &peer_id, &transport, &tx, idle_timeout)
             .await;
 
         heartbeat_task.abort();
@@ -647,9 +652,17 @@ impl Runtime {
         peer_id: &str,
         transport: &TransportKind,
         writer_tx: &LinkSender,
+        idle_timeout: Duration,
     ) -> Result<()> {
         loop {
-            match read_frame(reader).await {
+            match timeout(idle_timeout, read_frame(reader)).await {
+                Err(_) => {
+                    return Err(anyhow!(
+                        "peer idle timeout after {} ms",
+                        idle_timeout.as_millis()
+                    ));
+                }
+                Ok(result) => match result {
                 Ok(Frame::Data(envelope)) => {
                     self.peers.touch_rx(peer_id, transport).await;
                     let requires_ack = envelope.traffic_class.requires_ack();
@@ -708,6 +721,7 @@ impl Runtime {
                     }
                 }
                 Err(error) => return Err(error),
+                },
             }
         }
     }
@@ -1065,10 +1079,12 @@ impl Runtime {
 
         let now = now_ms();
         if let Some(discovered) = self.discovered_peers.get(peer_id) {
-            if now.saturating_sub(discovered.last_seen_ms) <= self.config.discovery.peer_ttl_ms
-                && !addrs.iter().any(|addr| addr == &discovered.network_addr)
-            {
-                addrs.push(discovered.network_addr.clone());
+            if now.saturating_sub(discovered.last_seen_ms) <= self.config.discovery.peer_ttl_ms {
+                for addr in &discovered.network_addrs {
+                    if !addrs.iter().any(|known| known == addr) {
+                        addrs.push(addr.clone());
+                    }
+                }
             }
         }
 
@@ -1102,16 +1118,25 @@ impl Runtime {
             let Some(network_port) = packet.network_port else {
                 continue;
             };
-            let network_addr = match source_addr {
-                SocketAddr::V4(addr) => SocketAddr::V4(SocketAddrV4::new(*addr.ip(), network_port)).to_string(),
-                SocketAddr::V6(_) => continue,
+            let mut network_addrs = packet.network_addrs;
+            if network_addrs.is_empty() {
+                let network_addr = match source_addr {
+                    SocketAddr::V4(addr) => SocketAddr::V4(SocketAddrV4::new(*addr.ip(), network_port)).to_string(),
+                    SocketAddr::V6(_) => continue,
+                };
+                network_addrs.push(network_addr);
+            }
+            network_addrs.retain(|addr| !addr.is_empty());
+            network_addrs.dedup();
+            let web_url = match source_addr {
+                SocketAddr::V4(addr) => packet.web_port.map(|web_port| format!("http://{}:{}", addr.ip(), web_port)),
+                SocketAddr::V6(_) => None,
             };
-            let web_url = packet.web_port.map(|web_port| format!("http://{}:{}", source_addr.ip(), web_port));
             let node_id = packet.node_id;
             self.discovered_peers.insert(
                 node_id.clone(),
                 DiscoveredPeer {
-                    network_addr,
+                    network_addrs,
                     web_url,
                     tags: packet.tags,
                     last_seen_ms: now_ms(),
@@ -1129,16 +1154,21 @@ impl Runtime {
         let interval = Duration::from_millis(self.config.discovery.announce_interval_ms);
 
         loop {
+            let network_port = self
+                .config
+                .transport
+                .network_listen
+                .as_deref()
+                .and_then(Self::parse_port);
             let packet = DiscoveryPacket {
                 version: 1,
                 node_id: self.node_id().to_string(),
                 tags: self.config.node.tags.clone(),
-                network_port: self
-                    .config
-                    .transport
-                    .network_listen
-                    .as_deref()
-                    .and_then(Self::parse_port),
+                network_port,
+                network_addrs: match network_port {
+                    Some(port) => Self::local_network_addrs(port).await,
+                    None => Vec::new(),
+                },
                 web_port: Self::parse_port(&self.config.web.bind),
                 timestamp_ms: now_ms(),
             };
@@ -1148,6 +1178,46 @@ impl Runtime {
             }
             sleep(interval).await;
         }
+    }
+
+    fn link_idle_timeout(&self) -> Duration {
+        let heartbeat = self.config.transport.heartbeat_interval_ms.max(1_000);
+        let ack = self.config.transport.ack_timeout_ms.max(heartbeat);
+        Duration::from_millis((heartbeat.saturating_mul(4)).max(ack.saturating_mul(2)).max(4_000))
+    }
+
+    fn node_report_ttl_ms(&self) -> u64 {
+        self.config.wifi.status_interval_ms.max(2_000).saturating_mul(3)
+    }
+
+    async fn local_network_addrs(port: u16) -> Vec<String> {
+        let output = match Command::new("ip")
+            .args(["-o", "-4", "addr", "show", "up", "scope", "global"])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => output,
+            Ok(output) => {
+                debug!(status = %output.status, "failed to enumerate local IPv4 addresses for discovery");
+                return Vec::new();
+            }
+            Err(error) => {
+                debug!(%error, "failed to spawn ip command for discovery");
+                return Vec::new();
+            }
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut addrs = stdout
+            .lines()
+            .filter_map(|line| line.split_whitespace().nth(3))
+            .filter_map(|cidr| cidr.split('/').next())
+            .filter(|ip| !ip.starts_with("127."))
+            .map(|ip| format!("{ip}:{port}"))
+            .collect::<Vec<_>>();
+        addrs.sort();
+        addrs.dedup();
+        addrs
     }
 }
 
