@@ -2,7 +2,7 @@
 # CANweeb 設定サンプル
 #
 # 典型構成: メイン処理 PC (node-main) <-> Raspberry Pi (node-pi)
-#   LAN ケーブル (主経路) + Wi-Fi fallback (ケーブル切断時)
+#   同じルーター / 同じ LAN ハブ配下の有線 LAN
 #
 # traffic_class の使い分け
 #   control   : GPIO 制御, 緊急停止, 状態遷移, 役割コマンド
@@ -32,7 +32,7 @@ retention_seconds = 86400
 bind = "0.0.0.0:8080"
 
 [transport]
-# 直結 Ethernet / 同一 LAN 上の有線経路を主経路にする
+# 同じ LAN / 同じルーター配下の network 経路
 network_listen = "0.0.0.0:7002"
 # 接続リトライ間隔 (ms)
 connect_interval_ms = 1500
@@ -53,9 +53,9 @@ peer_ttl_ms = 8000
 
 [wifi]
 interface = "wlan0"
-# 有線が切れたら、fallback_networks の優先順で Wi-Fi へ移る
-auto_manage = true
-# child は fallback_networks の優先順で SSID を選ぶ
+# デフォルトでは Wi-Fi 自動化を使わない
+auto_manage = false
+# 必要なときだけ child / parent に変更する
 desired_mode = "child"
 hotspot_ssid = "CANweeb-Parent"
 hotspot_password = "canweeb1234"
@@ -69,15 +69,15 @@ password = "canweeb1234"
 priority = 100
 
 # ---- ピア定義 ----
-# network_addr  : LAN ケーブル用の固定 IP を書くと、それを優先して接続する
-# discovery.enabled = true の場合、LAN 側が見えなくなっても Wi-Fi 側へ自動収束できる
+# network_addr  : 固定 IP 運用にしたい場合だけ設定する
+# discovery.enabled = true の場合、同じ LAN 内なら node_id だけで自動接続できる
 
 [[peers]]
 node_id = "node-main"
 role = "parent"
 relationship = "parent"
 preferred_transport_order = ["network"]
-network_addr = "10.42.0.1:7002"
+# network_addr = "192.168.1.10:7002"
 tags = ["strategy", "ai"]
 
 # マイコン追加例 (LAN/Wi-Fi のみ)

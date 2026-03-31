@@ -11,15 +11,15 @@ Rust 製のロボティクス向け多経路メッシュ通信デーモン。マ
 
 ## トランスポートの選び方
 
-CANweeb は **TCP が通る経路ならなんでも使えます**。デフォルトでは **LAN ケーブルを主経路、Wi-Fi をフォールバック** として使うのが簡単です。
+CANweeb は **TCP が通る経路ならなんでも使えます**。デフォルトでは **親子を同じルーター / 同じ LAN ハブ配下の既存 LAN に参加させる** のがいちばん簡単です。
 
 | 経路 | 典型的な用途 | 設定 |
 |---|---|---|
-| 有線 LAN | 直結テスト・机上テスト・主経路 | `network_addr` |
-| 通常 Wi-Fi LAN / AP | 有線切断時のフォールバック | `network_addr` |
+| 有線 LAN | 同じルーター / LAN ハブ配下の通常運用 | `network_addr` |
+| 通常 Wi-Fi LAN / AP | 同じ LAN にいる端末同士の接続 | `network_addr` |
 | USB gadget Ethernet (`192.168.7.x`) | 追加の別 transport が欲しい場合 | `usb_addr` |
 
-**いちばん簡単な構成**: 親と子を LAN ケーブルでつなぎ、親を `10.42.0.1/24`、子を `10.42.0.2/24` にして、`network_addr` だけ設定してください。
+**いちばん簡単な構成**: 親も子も同じルーターまたは同じ LAN ハブに有線接続し、`discovery.enabled = true` のまま起動してください。通常は `network_addr` の固定設定も不要です。
 
 ## 自動発見 / 自動ペアリング
 
@@ -35,11 +35,11 @@ CANweeb は **TCP が通る経路ならなんでも使えます**。デフォル
 
 通常の LAN discovery に加えて、`wifi` セクションで **親の自動 AP 化** と **子の既知 AP 自動接続** を行えます。
 
-推奨の既定運用は次です。
+これは **追加機能** です。初期セットアップの既定値では使いません。
 
-- 普段は **LAN ケーブル / 同一有線 LAN** で通信
-- 有線の `network_addr` が通らなくなったら **Wi-Fi fallback** で通信継続
-- サンプル設定では parent が `CANweeb-Parent` を出し、child がそこへ接続します
+- まずは **同じ LAN 内で discovery だけで接続確認** してください
+- Wi-Fi fallback を使いたい場合だけ `wifi.auto_manage = true` にしてください
+- サンプル設定には `CANweeb-Parent` の例を残していますが、デフォルトでは自動起動しません
 
 - 親ノード: `wifi.desired_mode = "parent"`
   - `nmcli device wifi hotspot` で AP を作成
@@ -74,10 +74,10 @@ CANweeb は **TCP が通る経路ならなんでも使えます**。デフォル
 ### 実運用でまず起動させるコツ
 
 - `network_listen = "0.0.0.0:7002"` が起動していれば、LAN / Wi-Fi 経由の通信待受はできています
-- サンプル設定では **有線 LAN 用の `network_addr` を先に試し**、見つからないときに discovery で見えた Wi-Fi 側へ落ちます
-- 親 AP の自動化に失敗した場合でも、**WebUI と network listener はそのまま起動することがあります**
-- 最短セットアップは、親子の Ethernet に `10.42.0.1/24` と `10.42.0.2/24` を入れて LAN ケーブルで直結する方法です
+- 初期セットアップは **同じルーター / 同じ LAN ハブ配下に置くだけ** にしてください
+- `wifi.auto_manage = false` のままなら `nmcli` や AP モードに依存しません
 - 親向け管理 UI は `http://<bind_addr>:8080/parent-ui/` で外部公開できます
+- `/parent-ui/` が 404 の場合は、**古い `target/release/canweeb` が動いている** ことが多いので `cargo build --release` 後に再起動してください
 
 ## Traffic Class
 
@@ -93,7 +93,7 @@ CANweeb は **TCP が通る経路ならなんでも使えます**。デフォル
 
 - USB / network の 2 系統 TCP リスナー・コネクタ（片方のみでも動作）
 - 同一 LAN 上の peer 自動検知・自動接続（UDP broadcast discovery）
-- USB 優先の送信経路選択（USB 接続中は常に USB を優先）
+- transport 優先順の設定と自動フェイルオーバー
 - 接続ごとの `control_tx` / `bulk_tx` 二重キュー（大容量 stream で制御系を塞がない）
 - `control` の ACK + hop-by-hop 再送（複数経路で自動フェイルオーバー）
 - `telemetry` の topic ごと最新値キャッシュ（メモリのみ、最大 4096 topic）
@@ -153,7 +153,7 @@ peer_ttl_ms = 8000
 
 [wifi]
 interface = "wlan0"
-auto_manage = true
+auto_manage = false
 desired_mode = "child"
 hotspot_ssid = "CANweeb-Parent"
 hotspot_password = "canweeb1234"
@@ -170,22 +170,23 @@ node_id  = "node-main"
 role = "parent"
 relationship = "parent"
 preferred_transport_order = ["network"]
-network_addr = "10.42.0.1:7002"
+# network_addr = "192.168.1.10:7002"
 tags = ["strategy"]
 ```
 
-**親子デモの最短構成**:
+**最短構成**:
 
 ```toml
-# parent 側 OS
-# ip addr add 10.42.0.1/24 dev eth0
+# parent.toml / child.toml ともに
+[discovery]
+enabled = true
 
-# child 側 OS
-# ip addr add 10.42.0.2/24 dev eth0
+[wifi]
+auto_manage = false
 
-# CANweeb 側
-network_listen = "0.0.0.0:7002"
-network_addr = "10.42.0.1:7002"
+[[peers]]
+# 相手の node_id だけ書く
+node_id = "node-main"
 ```
 
 ## HTTP API
@@ -240,17 +241,19 @@ network_addr = "10.42.0.1:7002"
 
 ## 推奨ネットワーク構成
 
-### Parent / Child を LAN ケーブルで直結する場合
+### Parent / Child を同じルーター / 同じ LAN ハブに接続する場合
 
 ```bash
-# Parent
-ip addr add 10.42.0.1/24 dev eth0
-
-# Child
-ip addr add 10.42.0.2/24 dev eth0
+# DHCP のままでよい
+# 例:
+ip addr show
 ```
 
-この状態で CANweeb を起動すると、有線が主経路になります。
+この状態で CANweeb を起動すると、discovery により相互検出できます。
+
+### Wi-Fi fallback を試したい場合
+
+`wifi.auto_manage = true` に変更してから使ってください。初期セットアップの既定値ではありません。
 
 ### USB Ethernet を使いたい場合
 
@@ -292,7 +295,7 @@ args: p2p_find
 
 ```
 Ubuntu Server (strategy / AI)
-    ↕ LAN cable (主) / Wi-Fi fallback via CANweeb
+    ↕ same LAN / router via CANweeb
 Raspberry Pi (sensor / GPIO / actuator)
     ↕ LAN / Wi-Fi / その他 TCP
 マイコン / 外部デバイス

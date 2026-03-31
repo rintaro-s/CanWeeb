@@ -12,8 +12,8 @@
 │    → 両デバイス情報表示                    │
 │    → 子の STM32 LED を ON/OFF             │
 └─────────────┬───────────────────────────┘
-              │ LAN ケーブル直結 (10.42.0.x)
-              │ 切断されたら Wi-Fi fallback
+              │ 同じルーター / 同じ LAN ハブ配下
+              │ discovery で自動接続
 ┌─────────────▼───────────────────────────┐
 │ Child (Raspberry Pi)                    │
 │  - CANweeb デーモン (port 8080)          │
@@ -33,22 +33,17 @@
 
 ### 1.5 Wi-Fi 自動化
 
-サンプル設定では次の挙動になります。
+Wi-Fi 自動化は **追加機能** です。デフォルトでは無効です。
 
 - `parent.toml`
   - `role = "parent"`
-  - 普段は LAN ケーブル側の `network_addr = "10.42.0.2:7002"` を優先して child と通信
-  - `wifi.desired_mode = "parent"`
-  - 起動後に `nmcli device wifi hotspot ...` を使って親 AP を作成し、ケーブルが切れたときの受け口を用意
-  - `wlan0` ですでに別の Wi-Fi に繋がっていた場合、その接続は AP 用に切り替わる
+  - デフォルトは `wifi.auto_manage = false`
+  - 試すときだけ `wifi.desired_mode = "parent"` と `wifi.auto_manage = true` を使う
 
 - `child.toml`
   - `role = "child"`
-  - 普段は LAN ケーブル側の `network_addr = "10.42.0.1:7002"` を優先して親と通信
-  - `wifi.desired_mode = "child"`
-  - LAN 側が見えなくなったら `wifi.fallback_networks` の優先順で接続を試行
-  - デフォルトでは `CANweeb-Parent` へ接続
-  - 起動時点で別の Wi-Fi に繋がっていても、より優先度の高い設定済み SSID が見えていればそちらへ切り替える
+  - デフォルトは `wifi.auto_manage = false`
+  - 試すときだけ `wifi.desired_mode = "child"` と `wifi.fallback_networks` を使う
 
 家庭内 AP に接続させたい場合は `config/child.toml` に追加します。
 
@@ -75,52 +70,50 @@ priority = 200
 
 このサンプルは **親を起動して WebUI を開き、子を起動するだけ** で試せるようにしています。
 
-- **親**: `config/parent.toml` により LAN ケーブルを主経路、`wlan0` を fallback 用 AP として管理
-- **子**: `config/child.toml` により LAN ケーブルを主経路、`CANweeb-Parent` を fallback 先として管理
+- **親**: `config/parent.toml` のままで起動
+- **子**: `config/child.toml` のままで起動
 - **両方**: discovery で peer を自動検知
 - **親 UI**: child の生存確認、電源状態、Wi-Fi 状態、RTT、接続品質、transport 優先順を表示
 
-最短で試すなら、**親の Ethernet と子の Ethernet を LAN ケーブルで 1 本つなぐ**だけです。
+最短で試すなら、**親と子を同じルーターまたは同じ LAN ハブに有線接続**するだけです。
 
-そのうえで OS 側に次の固定 IP を入れてください。
+OS 側は **DHCP のままで構いません**。
 
-- **Parent の Ethernet**: `10.42.0.1/24`
-- **Child の Ethernet**: `10.42.0.2/24`
+- **Parent**: ルーターから IP を取得
+- **Child**: 同じセグメントの IP を取得
 
-これで通常は **LAN ケーブル経由** になり、ケーブルが切れたら **親 AP ↔ child Wi-Fi** へ寄ります。
+これで discovery により通常は自動接続されます。
 
 ### 1. ネットワーク設定
 
-このサンプルは **USB Ethernet を使いません**。次の順番で使います。
+このサンプルのデフォルトは **同じ LAN 内の discovery** です。
 
-- **LAN ケーブル直結 / 同一有線 LAN**
-- **親が自動 AP、子が自動接続する Wi-Fi fallback**
+- **同じルーター / LAN ハブ配下の有線 LAN**
+- **必要なら追加で Wi-Fi 自動化**
 
-基本は `discovery.enabled = true` のままにしておけば、固定 IP を持たなくても peer を見つけられます。
+`discovery.enabled = true` のままにしておけば、通常は固定 IP を書かなくても peer を見つけられます。
 
 #### Parent (ノートPC)
 
-Parent 側は Ethernet に固定 IP を 1 つ入れるだけです。
+Parent 側は同じ LAN に参加していれば十分です。
 
 ```bash
-ip addr add 10.42.0.1/24 dev eth0
-# NetworkManager を使う場合は eth0 を実際の有線 IF 名に置き換える
+ip addr show
 ```
 
 #### Child (Raspberry Pi)
 
-Child 側も Ethernet に固定 IP を 1 つ入れるだけです。
+Child 側も同じ LAN に参加していれば十分です。
 
 ```bash
-sudo ip addr add 10.42.0.2/24 dev eth0
-sudo ip link set eth0 up
+ip addr show
 ```
 
 疎通確認:
 
 ```bash
-# Parent から
-ping 10.42.0.2
+# Parent から child の LAN IP へ
+ping <child-lan-ip>
 ```
 
 ---
@@ -215,7 +208,7 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
 2. **接続状態を確認**  
    - Parent (ノートPC) のステータスが緑色の点で表示されます
    - Child (Raspberry Pi) の接続状態が表示されます
-   - Transport が `network` なら、LAN ケーブルまたは Wi-Fi fallback のどちらかで接続中です
+   - Transport が `network` なら、LAN または Wi-Fi で接続中です
    - Quality / RTT / Wi-Fi / Queue/Inbox で child の状態が見られます
 
 3. **LED を制御**  
@@ -239,7 +232,7 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
 1. ネットワークの疎通確認
    ```bash
    # Parent から
-   ping 10.42.0.2
+   ping <child-lan-ip>
    ```
 
 2. CANweeb のログを確認
@@ -256,9 +249,9 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
    - `web ui started bind_addr=0.0.0.0:8080`
      - WebUI は起動済みです
    - `failed to start hotspot on wlan0`
-     - 親 AP 化だけ失敗しています
+     - `wifi.auto_manage = true` にしたときだけ関係する失敗です
    - `failed to connect wlan0 to CANweeb-Parent`
-     - 子は親 AP を見つけられていないか、親 AP が未起動です
+     - `wifi.auto_manage = true` にしたときだけ関係する失敗です
 
 3. ファイアウォールの確認
    ```bash
@@ -268,27 +261,23 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
    sudo ufw allow 8080/tcp
    ```
 
-4. 親 AP が立たない場合
+4. discovery で見つからない場合
    ```bash
-   nmcli device status
-   nmcli radio wifi
-   nmcli device wifi list ifname wlan0
-   nmcli device wifi hotspot ifname wlan0 con-name "CANweeb Hotspot" ssid "CANweeb-Parent" password "canweeb1234"
+   ip addr show
+   ip route
+   curl http://localhost:8080/api/status
    ```
 
-   これが失敗する場合は、CANweeb の問題ではなく次のどれかです。
+   次を確認してください。
 
-   - `NetworkManager` / `nmcli` が使えない
-   - `wlan0` が存在しない
-   - Wi-Fi アダプタ / ドライバが AP モード非対応
-   - 権限不足
-   - 既存の接続管理と競合している
+   - 親子が本当に同じ L2 / 同じ LAN セグメントにいるか
+   - UDP broadcast が遮断されていないか
+   - ルーター越しではなく同じセグメントにいるか
 
-5. LAN ケーブル優先でまず動かす
-   - 親 Ethernet に `10.42.0.1/24`
-   - 子 Ethernet に `10.42.0.2/24`
-   - `ping 10.42.0.2` が通ることを確認
-   - その後に `http://<parent-ip>:8080/parent-ui/` で状態確認
+5. Parent WebUI が 404 の場合
+   - `cargo build --release` を実行
+   - いったん `canweeb` を止めて起動し直す
+   - その後に `http://<parent-ip>:8080/parent-ui/` を開く
 
 ### LED が反応しない
 
@@ -323,14 +312,13 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
    curl http://localhost:8080/api/status
    ```
 
-2. ブラウザのコンソールでエラーを確認
-   - F12 キーでデベロッパーツールを開く
-   - CORS エラーが出る場合は、`examples/parent-ui/index.html` を file:// ではなく HTTP サーバー経由で開く
+2. `/parent-ui/` が 404 の場合は release を更新
    ```bash
-   cd examples/parent-ui
-   python3 -m http.server 3000
-   # http://localhost:3000 で開く
+   cargo build --release
+   ./target/release/canweeb --config config/parent.toml
    ```
+
+3. それでも駄目なら標準 UI は `http://localhost:8080/` で確認できます
 
 ---
 
@@ -380,7 +368,7 @@ match command.as_str() {
      "text": "on"
    }
    ```
-3. Parent CANweeb → Child CANweeb へメッセージ転送（LAN ケーブル優先、切断時は Wi-Fi fallback）
+3. Parent CANweeb → Child CANweeb へメッセージ転送（同じ LAN 内の `network` transport）
 4. Child CANweeb が inbox に保存
 5. child-serial-daemon が inbox をポーリング（500ms 間隔）
 6. subject が "led_control" のメッセージを検出
@@ -401,16 +389,14 @@ match command.as_str() {
 
 ## LAN / Wi-Fi フォールバックと自動発見
 
-デフォルトでは **LAN ケーブル用に設定した `network_addr` を先に試し**、それが通らないときに **discovery で見つかった Wi-Fi 側アドレス** へフォールバックします。
+デフォルトでは **discovery による同一 LAN 内の自動発見** を使います。
 
-サンプルでは次の固定 IP を想定しています:
+固定 IP 運用にしたい場合だけ `network_addr` を書いてください:
 
 ```toml
-# parent.toml
-network_addr = "10.42.0.2:7002"
-
-# child.toml
-network_addr = "10.42.0.1:7002"
+[[peers]]
+node_id = "child"
+network_addr = "192.168.1.20:7002"
 ```
 
 親 WebUI では child の `discovered` 状態、`advertised_network_addr`、`Child WebUI` URL も表示されます。

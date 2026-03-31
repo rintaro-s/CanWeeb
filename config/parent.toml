@@ -32,9 +32,9 @@ peer_ttl_ms = 8000
 
 [wifi]
 interface = "wlan0"
-# 有線が切れたら、この interface で親 AP を出して child を受ける
-auto_manage = true
-# parent を指定すると、この interface は AP 用として使われる
+# デフォルトは既存 LAN / 同じルーター配下で使うので自動操作しない
+auto_manage = false
+# Wi-Fi 自動化を試すときだけ parent に変更する
 desired_mode = "parent"
 hotspot_ssid = "CANweeb-Parent"
 hotspot_password = "canweeb1234"
@@ -46,6 +46,6 @@ node_id = "child"
 role = "child"
 relationship = "child"
 preferred_transport_order = ["network"]
-# LAN ケーブル直結の child 側 Ethernet アドレス
-network_addr = "10.42.0.2:7002"
+# 同じ LAN 内なら discovery で自動検知するので通常は不要
+# network_addr = "192.168.1.20:7002"
 tags = ["robot", "actuator"]

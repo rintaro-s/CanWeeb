@@ -32,8 +32,8 @@ peer_ttl_ms = 8000
 
 [wifi]
 interface = "wlan0"
-# 有線が切れたら fallback_networks の優先順で親 AP へ接続する
-auto_manage = true
+# デフォルトは既存 LAN / 同じルーター配下で使うので自動操作しない
+auto_manage = false
 desired_mode = "child"
 hotspot_ssid = "CANweeb-Parent"
 hotspot_password = "canweeb1234"
@@ -51,6 +51,6 @@ node_id = "parent"
 role = "parent"
 relationship = "parent"
 preferred_transport_order = ["network"]
-# LAN ケーブル直結の親側 Ethernet アドレス
-network_addr = "10.42.0.1:7002"
+# 同じ LAN 内なら discovery で自動検知するので通常は不要
+# network_addr = "192.168.1.10:7002"
 tags = ["control", "ui"]
