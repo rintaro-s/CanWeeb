@@ -761,7 +761,7 @@ impl Runtime {
             let status = wifi::collect_status(&self.config.wifi).await;
             let should_reapply = match self.config.wifi.desired_mode.as_str() {
                 "parent" | "ap" | "hotspot" => status.mode != "ap",
-                "child" | "client" => status.mode != "client",
+                "child" | "client" => wifi::needs_client_reconnect(&self.config.wifi, &status),
                 _ => false,
             };
             if should_reapply {

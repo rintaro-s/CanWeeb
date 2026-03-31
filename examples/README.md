@@ -39,12 +39,14 @@
   - `role = "parent"`
   - `wifi.desired_mode = "parent"`
   - 起動後に `nmcli device wifi hotspot ...` を使って親 AP を作成
+  - `wlan0` ですでに別の Wi-Fi に繋がっていた場合、その接続は AP 用に切り替わる
 
 - `child.toml`
   - `role = "child"`
   - `wifi.desired_mode = "child"`
   - `wifi.fallback_networks` の優先順で接続を試行
   - デフォルトでは `CANweeb-Parent` へ接続
+  - 起動時点で別の Wi-Fi に繋がっていても、より優先度の高い設定済み SSID が見えていればそちらへ切り替える
 
 家庭内 AP に接続させたい場合は `config/child.toml` に追加します。
 
@@ -56,6 +58,12 @@ priority = 200
 ```
 
 `priority` が大きいほど先に試します。
+
+インターネット接続について:
+
+- **親子が既存 LAN / 既存 Wi-Fi に参加する構成** なら、その LAN がインターネットに出られる限り、親子ともにネット接続できます
+- **親が `wlan0` で AP を作る構成** では、その `wlan0` は親子通信用になります
+- 親も同時にネットへ出したい場合は、有線 LAN か別のネットワークインターフェースを併用してください
 
 ---
 
@@ -70,14 +78,24 @@ priority = 200
 - **両方**: discovery で peer を自動検知
 - **親 UI**: child の生存確認、電源状態、Wi-Fi 状態、RTT、接続品質、transport 優先順を表示
 
+既存の家庭内 LAN / ルーター / LAN ハブを使いたい場合は、親を AP にせず、親子を同じ LAN に参加させればそのまま動きます。
+
 ### 1. ネットワーク設定
 
-このサンプルは次の 2 パターンで動きます。
+このサンプルは **USB Ethernet がなくても動きます**。次のどれでも使えます。
 
 - **USB Ethernet + LAN/Wi-Fi fallback**
-- **LAN/Wi-Fi only + 自動検知**
+- **LAN ハブ経由の有線接続**
+- **既存 Wi-Fi / AP 経由の接続**
+- **親が自動 AP、子が自動接続**
+
+基本は `discovery.enabled = true` のままにしておけば、固定 IP を持たなくても peer を見つけられます。
 
 #### Parent (ノートPC)
+
+Parent 側は、接続方法に応じて 1 つだけ設定すれば十分です。
+
+##### USB Ethernet を使う場合
 
 USB Ethernet インターフェースに固定 IP を割り当てます。
 
@@ -91,7 +109,20 @@ nmcli connection modify usb0 ipv4.method manual
 nmcli connection up usb0
 ```
 
+##### LAN ハブ / 既存 Wi-Fi を使う場合
+
+同じ LAN に入っていれば、親子ともに固定 IP は必須ではありません。
+
+```bash
+# 例: 既存の LAN に接続済みであれば discovery だけで接続可能
+ip addr show
+```
+
 #### Child (Raspberry Pi)
+
+Child 側も、USB gadget を使う場合と使わない場合で分かれます。
+
+##### USB gadget Ethernet を使う場合
 
 USB gadget Ethernet を有効化します。
 
@@ -114,14 +145,25 @@ sudo ip link set usb0 up
 #     netmask 255.255.255.0
 ```
 
+##### LAN ハブ / Wi-Fi を使う場合
+
+USB gadget は不要です。`config/child.toml` の `wifi` 設定を有効にするか、通常の LAN に参加してください。
+
+```bash
+# 例: 通常の LAN / Wi-Fi に参加していれば、CANweeb は discovery で peer を見つけます
+ip addr show
+nmcli device status
+```
+
 疎通確認:
 
 ```bash
-# Parent から
+# Parent から: USB Ethernet の場合
 ping 192.168.7.2
 
-# Child から
-ping 192.168.7.1
+# 既存 LAN / Wi-Fi の場合は、相手の LAN 側アドレスまたは discovery で見えたアドレスへ ping
+# 例:
+# ping 192.168.1.10
 ```
 
 ---

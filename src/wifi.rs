@@ -235,7 +235,31 @@ async fn start_hotspot(config: &WifiConfig, details: &mut Vec<String>) -> Result
     Ok(())
 }
 
+pub fn needs_client_reconnect(config: &WifiConfig, status: &WifiStatus) -> bool {
+    if status.mode != "client" {
+        return true;
+    }
+
+    let Some(active_ssid) = status.active_ssid.as_deref() else {
+        return true;
+    };
+
+    let Some(preferred_network) = preferred_network(config, status) else {
+        return !config.fallback_networks.iter().any(|network| network.ssid == active_ssid);
+    };
+
+    preferred_network.ssid != active_ssid
+}
+
 async fn connect_best_fallback(config: &WifiConfig, details: &mut Vec<String>) -> Result<()> {
+    let status = collect_status(config).await;
+    if let Some(active_ssid) = status.active_ssid.as_deref() {
+        if !needs_client_reconnect(config, &status) {
+            details.push(format!("already connected to preferred Wi-Fi: {active_ssid}"));
+            return Ok(());
+        }
+    }
+
     let mut networks = config.fallback_networks.clone();
     networks.sort_by(|left, right| right.priority.cmp(&left.priority).then_with(|| left.ssid.cmp(&right.ssid)));
     let mut last_error = None;
@@ -249,6 +273,28 @@ async fn connect_best_fallback(config: &WifiConfig, details: &mut Vec<String>) -
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow!("no fallback Wi-Fi networks configured")))
+}
+
+fn preferred_network<'a>(config: &'a WifiConfig, status: &WifiStatus) -> Option<&'a WifiNetworkConfig> {
+    let mut networks = config.fallback_networks.iter().collect::<Vec<_>>();
+    networks.sort_by(|left, right| right.priority.cmp(&left.priority).then_with(|| left.ssid.cmp(&right.ssid)));
+
+    for network in &networks {
+        let visible = status.scanned_networks.iter().any(|candidate| candidate.ssid == network.ssid);
+        if visible {
+            return Some(*network);
+        }
+    }
+
+    if let Some(active_ssid) = status.active_ssid.as_deref() {
+        for network in &networks {
+            if network.ssid == active_ssid {
+                return Some(*network);
+            }
+        }
+    }
+
+    networks.into_iter().next()
 }
 
 async fn connect_ssid(config: &WifiConfig, ssid: &str, password: Option<&str>, details: &mut Vec<String>) -> Result<()> {

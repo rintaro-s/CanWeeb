@@ -55,7 +55,9 @@ peer_ttl_ms = 8000
 
 [wifi]
 interface = "wlan0"
+# 既存 LAN / 既存 Wi-Fi をそのまま使うだけなら false にできる
 auto_manage = true
+# child は fallback_networks の優先順で SSID を選ぶ
 desired_mode = "child"
 hotspot_ssid = "CANweeb-Parent"
 hotspot_password = "canweeb1234"
@@ -63,6 +65,7 @@ hotspot_connection_name = "CANweeb Hotspot"
 status_interval_ms = 2000
 
 [[wifi.fallback_networks]]
+# priority が高いほど優先。親 AP を最優先したいなら高くする
 ssid = "CANweeb-Parent"
 password = "canweeb1234"
 priority = 100

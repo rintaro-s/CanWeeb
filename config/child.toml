@@ -42,6 +42,7 @@ hotspot_connection_name = "CANweeb Hotspot"
 status_interval_ms = 2000
 
 [[wifi.fallback_networks]]
+# priority が高いほど優先。親 AP を最優先したいならこれを最大にする
 ssid = "CANweeb-Parent"
 password = "canweeb1234"
 priority = 100
