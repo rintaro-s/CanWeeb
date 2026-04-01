@@ -1,4 +1,5 @@
-use crate::{pinMode, pwmFrequency, pwmWrite, CmdError, PinMode};
+use crate::arduino::{pinMode, pwmFrequency, pwmWrite};
+use crate::{CmdError, PinMode};
 
 #[derive(Debug, Clone)]
 pub struct PwmOutput {
@@ -46,13 +47,13 @@ impl PwmOutput {
         self
     }
 
-    pub fn duty_percent(mut self, duty_percent: f64) -> Self {
+    pub fn with_duty_percent(mut self, duty_percent: f64) -> Self {
         self.duty_percent = self.clamp_duty(duty_percent);
         self
     }
 
     pub fn duty_ratio(self, ratio: f64) -> Self {
-        self.duty_percent(ratio * 100.0)
+        self.with_duty_percent(ratio * 100.0)
     }
 
     pub fn start(&self) -> Result<(), CmdError> {

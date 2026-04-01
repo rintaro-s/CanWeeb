@@ -67,7 +67,7 @@ impl App {
         let pwm = PwmOutput::new(args.pin)
             .frequency(args.frequency.max(1))
             .range(args.min_duty, args.max_duty)
-            .duty_percent(args.duty);
+            .with_duty_percent(args.duty);
 
         Self {
             backend_label,
@@ -83,31 +83,36 @@ impl App {
     }
 
     fn apply_current_settings(&mut self) -> Result<()> {
-        self.pwm.apply()
+        self.pwm.apply()?;
+        Ok(())
     }
 
     fn set_pin(&mut self, pin: u8) -> Result<()> {
         self.pwm = PwmOutput::new(pin)
             .frequency(self.pwm.frequency_hz())
             .range(self.min_duty, self.max_duty)
-            .duty_percent(self.pwm.duty_percent());
+            .with_duty_percent(self.pwm.duty_percent());
         self.apply_current_settings()
     }
 
     fn set_frequency(&mut self, frequency_hz: u32) -> Result<()> {
-        self.pwm.set_frequency(frequency_hz)
+        self.pwm.set_frequency(frequency_hz)?;
+        Ok(())
     }
 
     fn set_duty(&mut self, duty_percent: f64) -> Result<()> {
-        self.pwm.set_duty_percent(duty_percent)
+        self.pwm.set_duty_percent(duty_percent)?;
+        Ok(())
     }
 
     fn adjust_duty(&mut self, delta: f64) -> Result<()> {
-        self.pwm.step_duty(delta)
+        self.pwm.step_duty(delta)?;
+        Ok(())
     }
 
     fn adjust_frequency(&mut self, delta: i64) -> Result<()> {
-        self.pwm.step_frequency(delta as i32)
+        self.pwm.step_frequency(delta as i32)?;
+        Ok(())
     }
 
     fn commit_input(&mut self) -> Result<()> {

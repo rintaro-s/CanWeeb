@@ -532,6 +532,25 @@ fn arg_u16(args: &Map<String, Value>, key: &str) -> Result<u16, CmdError> {
         })
 }
 
+fn arg_u32_any(args: &Map<String, Value>, keys: &[&str]) -> Result<u32, CmdError> {
+    keys.iter()
+        .find_map(|k| args.get(*k).and_then(Value::as_u64))
+        .map(|v| v as u32)
+        .ok_or_else(|| CmdError::InvalidArgument {
+            key: keys.join("|"),
+            reason: "missing unsigned integer".to_string(),
+        })
+}
+
+fn arg_f64_any(args: &Map<String, Value>, keys: &[&str]) -> Result<f64, CmdError> {
+    keys.iter()
+        .find_map(|k| args.get(*k).and_then(Value::as_f64))
+        .ok_or_else(|| CmdError::InvalidArgument {
+            key: keys.join("|"),
+            reason: "missing number".to_string(),
+        })
+}
+
 fn parse_pin_mode(value: Option<&Value>) -> Result<PinMode, CmdError> {
     let Some(raw) = value.and_then(Value::as_str) else {
         return Err(CmdError::InvalidArgument {
