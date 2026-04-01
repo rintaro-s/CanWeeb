@@ -19,6 +19,7 @@ struct RealState {
     gpio_lines: HashMap<u32, LineHandle>,
     gpio_modes: HashMap<u32, PinMode>,
     pwm_channels: HashMap<u32, PwmChannel>,
+    pwm_profiles: HashMap<u32, PwmProfile>,
     analog_read_resolution: u8,
     analog_write_resolution: u8,
     analog_reference: String,
@@ -27,6 +28,23 @@ struct RealState {
 struct PwmChannel {
     duty_ns: u64,
     enabled: bool,
+}
+
+#[derive(Clone)]
+struct PwmProfile {
+    frequency_hz: u32,
+    duty_percent: f64,
+    enabled: bool,
+}
+
+impl Default for PwmProfile {
+    fn default() -> Self {
+        Self {
+            frequency_hz: 25_000,
+            duty_percent: 0.0,
+            enabled: false,
+        }
+    }
 }
 
 impl RealBackend {
@@ -38,6 +56,7 @@ impl RealBackend {
                 gpio_lines: HashMap::new(),
                 gpio_modes: HashMap::new(),
                 pwm_channels: HashMap::new(),
+                pwm_profiles: HashMap::new(),
                 analog_read_resolution: 10,
                 analog_write_resolution: 8,
                 analog_reference: "default".to_string(),
@@ -122,6 +141,23 @@ impl RealBackend {
             19 => Some((0, 1)),
             _ => None,
         }
+    }
+
+    fn pwm_period_ns(frequency_hz: u32) -> Result<u64, CmdError> {
+        if frequency_hz == 0 {
+            return Err(CmdError::InvalidArgument {
+                key: "frequency_hz".to_string(),
+                reason: "frequency must be greater than zero".to_string(),
+            });
+        }
+        let period_ns = 1_000_000_000u64 / frequency_hz as u64;
+        if period_ns == 0 {
+            return Err(CmdError::InvalidArgument {
+                key: "frequency_hz".to_string(),
+                reason: "frequency is too high for hardware PWM".to_string(),
+            });
+        }
+        Ok(period_ns)
     }
 }
 
@@ -288,6 +324,101 @@ impl crate::Backend for RealBackend {
                         ),
                     });
                 }
+            }
+            ("pwm", "pwm_frequency") => {
+                let pin = arg_u8(&args, "pin")?;
+                let frequency_hz = arg_u32_any(&args, &["frequency_hz", "frequency"])?;
+
+                let (chip, channel) = Self::get_hardware_pwm_mapping(pin as u32).ok_or_else(|| {
+                    CmdError::InvalidArgument {
+                        key: "pin".to_string(),
+                        reason: format!(
+                            "Pin {} does not support hardware PWM. Use pins 12, 13, 18, or 19.",
+                            pin
+                        ),
+                    }
+                })?;
+
+                let period_ns = Self::pwm_period_ns(frequency_hz)?;
+                let duty_percent = {
+                    let profile = state
+                        .pwm_profiles
+                        .entry(pin as u32)
+                        .or_insert_with(PwmProfile::default);
+                    profile.frequency_hz = frequency_hz;
+                    profile.duty_percent
+                };
+                let duty_ns = ((period_ns as f64) * duty_percent / 100.0)
+                    .round()
+                    .min(period_ns as f64) as u64;
+
+                Self::setup_pwm(chip, channel, period_ns)?;
+                Self::write_pwm_duty(chip, channel, duty_ns)?;
+
+                let enabled = duty_percent > 0.0;
+                Self::enable_pwm(chip, channel, enabled)?;
+                if let Some(profile) = state.pwm_profiles.get_mut(&(pin as u32)) {
+                    profile.enabled = enabled;
+                }
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "pwm frequency updated",
+                    json!({
+                        "pin": pin,
+                        "frequency_hz": frequency_hz,
+                        "duty_percent": duty_percent,
+                    }),
+                )
+            }
+            ("pwm", "pwm_write") => {
+                let pin = arg_u8(&args, "pin")?;
+                let duty_percent = arg_f64_any(&args, &["duty_percent", "duty"])?;
+                let duty_percent = duty_percent.clamp(0.0, 100.0);
+
+                let (chip, channel) = Self::get_hardware_pwm_mapping(pin as u32).ok_or_else(|| {
+                    CmdError::InvalidArgument {
+                        key: "pin".to_string(),
+                        reason: format!(
+                            "Pin {} does not support hardware PWM. Use pins 12, 13, 18, or 19.",
+                            pin
+                        ),
+                    }
+                })?;
+
+                let frequency_hz = {
+                    let profile = state
+                        .pwm_profiles
+                        .entry(pin as u32)
+                        .or_insert_with(PwmProfile::default);
+                    profile.duty_percent = duty_percent;
+                    profile.frequency_hz
+                };
+
+                let period_ns = Self::pwm_period_ns(frequency_hz)?;
+                let duty_ns = ((period_ns as f64) * duty_percent / 100.0)
+                    .round()
+                    .min(period_ns as f64) as u64;
+
+                Self::setup_pwm(chip, channel, period_ns)?;
+                Self::write_pwm_duty(chip, channel, duty_ns)?;
+
+                let enabled = duty_percent > 0.0;
+                Self::enable_pwm(chip, channel, enabled)?;
+                if let Some(profile) = state.pwm_profiles.get_mut(&(pin as u32)) {
+                    profile.enabled = enabled;
+                }
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "pwm write ok",
+                    json!({
+                        "pin": pin,
+                        "frequency_hz": frequency_hz,
+                        "duty_percent": duty_percent,
+                        "enabled": enabled,
+                    }),
+                )
             }
             ("analog", "analog_write_resolution") => {
                 let bits = arg_u8(&args, "bits")?;

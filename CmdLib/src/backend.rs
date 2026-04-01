@@ -23,6 +23,7 @@ struct SimState {
     analog_write_resolution: u8,
     analog_reference: String,
     tones: HashMap<String, ToneState>,
+    pwm_profiles: HashMap<u8, PwmProfile>,
     motors: HashMap<String, f64>,
     uart_ports: HashMap<String, UartState>,
     controller: ControllerState,
@@ -40,6 +41,7 @@ impl Default for SimState {
             analog_write_resolution: 8,
             analog_reference: "default".to_string(),
             tones: HashMap::new(),
+            pwm_profiles: HashMap::new(),
             motors: HashMap::new(),
             uart_ports: HashMap::new(),
             controller: ControllerState::default(),
@@ -80,6 +82,23 @@ struct UartState {
 struct ToneState {
     frequency_hz: u32,
     duration_ms: Option<u64>,
+}
+
+#[derive(Clone)]
+struct PwmProfile {
+    frequency_hz: u32,
+    duty_percent: f64,
+    enabled: bool,
+}
+
+impl Default for PwmProfile {
+    fn default() -> Self {
+        Self {
+            frequency_hz: 25_000,
+            duty_percent: 0.0,
+            enabled: false,
+        }
+    }
 }
 
 impl SimBackend {
@@ -270,6 +289,51 @@ impl Backend for SimBackend {
                     command.id,
                     "analog write resolution updated",
                     json!({ "bits": bits }),
+                )
+            }
+            ("pwm", "pwm_frequency") => {
+                let pin = arg_u8(&args, "pin")?;
+                let frequency_hz = arg_u32_any(&args, &["frequency_hz", "frequency"])?;
+                if frequency_hz == 0 {
+                    return Err(CmdError::InvalidArgument {
+                        key: "frequency_hz".to_string(),
+                        reason: "frequency must be greater than zero".to_string(),
+                    });
+                }
+
+                let duty_percent = {
+                    let profile = state.pwm_profiles.entry(pin).or_insert_with(PwmProfile::default);
+                    profile.frequency_hz = frequency_hz;
+                    profile.duty_percent
+                };
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "pwm frequency updated",
+                    json!({
+                        "pin": pin,
+                        "frequency_hz": frequency_hz,
+                        "duty_percent": duty_percent,
+                    }),
+                )
+            }
+            ("pwm", "pwm_write") => {
+                let pin = arg_u8(&args, "pin")?;
+                let duty_percent = arg_f64_any(&args, &["duty_percent", "duty"])?;
+                let duty_percent = duty_percent.clamp(0.0, 100.0);
+                let profile = state.pwm_profiles.entry(pin).or_insert_with(PwmProfile::default);
+                profile.duty_percent = duty_percent;
+                profile.enabled = duty_percent > 0.0;
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "pwm write ok",
+                    json!({
+                        "pin": pin,
+                        "frequency_hz": profile.frequency_hz,
+                        "duty_percent": profile.duty_percent,
+                        "enabled": profile.enabled,
+                    }),
                 )
             }
             ("tone", "tone") => {

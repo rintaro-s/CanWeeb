@@ -223,6 +223,26 @@ SERIAL_PORT=/dev/ttyACM0 BAUD_RATE=9600 ./target/release/child-serial-daemon
 5. **コマンドログを確認**  
    ボタンをクリックすると、送信状況と結果がログに表示されます。
 
+## PWM TUI
+
+`scripts/pwm.py` の代わりになる Rust 製の対話型 PWM 画面を追加しました。
+
+```bash
+# シミュレーションで試す
+cargo run --bin pwm_tui -- --sim
+
+# 実機で GPIO18 を 25kHz / 30% で開始
+cargo run --bin pwm_tui -- --pin 18 --frequency 25000 --duty 30
+```
+
+操作は次の通りです。
+
+- `+` / `-` で duty を増減
+- `Up` / `Down` で周波数を増減
+- `d` / `f` / `p` で入力対象を duty / frequency / pin に切り替え
+- 数字を入力して `Enter` で直接反映
+- `q` で終了
+
 ---
 
 ## トラブルシューティング

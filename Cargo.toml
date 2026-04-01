@@ -10,7 +10,9 @@ base64 = "0.22"
 bincode = "1.3"
 bytes = "1.6"
 clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
 dashmap = "5.5"
+canweeb_cmdlib = { path = "CmdLib" }
 serde = { version = "1.0", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = "1.0"

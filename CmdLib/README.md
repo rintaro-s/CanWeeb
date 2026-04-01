@@ -84,6 +84,27 @@ fn main() -> Result<(), CmdError> {
 }
 ```
 
+    ### より Arduino っぽい書き方
+
+    ```rust
+    use canweeb_cmdlib::prelude::*;
+
+    fn main() -> Result<(), CmdError> {
+        use_real_backend()?;
+
+        let mut fan = PwmOutput::new(18)
+            .frequency(25_000)
+            .range(0.0, 100.0)
+            .duty_percent(30.0);
+
+        fan.start()?;
+        fan.step_duty(5.0)?;
+        fan.set_frequency(22_000)?;
+
+        Ok(())
+    }
+    ```
+
 ### シミュレーションモード（テスト用）
 
 ```rust

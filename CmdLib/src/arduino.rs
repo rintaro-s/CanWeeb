@@ -543,6 +543,24 @@ pub fn analogWriteResolution(bits: u8) -> Result<(), CmdError> {
     Ok(())
 }
 
+pub fn pwmFrequency(pin: u8, frequency_hz: u32) -> Result<(), CmdError> {
+    command_ok(
+        "pwm",
+        "pwm_frequency",
+        json!({ "pin": pin, "frequency_hz": frequency_hz }),
+    )?;
+    Ok(())
+}
+
+pub fn pwmWrite(pin: u8, duty_percent: f64) -> Result<(), CmdError> {
+    command_ok(
+        "pwm",
+        "pwm_write",
+        json!({ "pin": pin, "duty_percent": duty_percent }),
+    )?;
+    Ok(())
+}
+
 pub fn cos(x: f64) -> f64 {
     x.cos()
 }

@@ -4,6 +4,7 @@ mod command;
 mod error;
 mod real_backend;
 mod remote_exec;
+mod pwm;
 mod runtime;
 mod types;
 
@@ -16,6 +17,7 @@ pub use backend::{Backend, SimBackend};
 pub use command::{CommandEnvelope, CommandResult};
 pub use error::CmdError;
 pub use real_backend::RealBackend;
+pub use pwm::PwmOutput;
 pub use remote_exec::{
 	define_child_program, get_child_program, run_child_program, send_child_program_to,
 	ChildProgram, ChildProgramReport, ProgramBuilder, ProgramStep,
