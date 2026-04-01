@@ -1,6 +1,7 @@
 use crate::backend::{Backend, SimBackend};
 use crate::command::{CommandEnvelope, CommandResult};
 use crate::error::CmdError;
+use crate::real_backend::RealBackend;
 use once_cell::sync::OnceCell;
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
@@ -28,6 +29,10 @@ pub fn set_backend_arc(backend: Arc<dyn Backend>) -> Result<(), CmdError> {
 
 pub fn use_sim_backend() -> Result<(), CmdError> {
     set_backend(SimBackend::new())
+}
+
+pub fn use_real_backend() -> Result<(), CmdError> {
+    set_backend(RealBackend::new()?)
 }
 
 pub fn dispatch(domain: &str, action: &str, args: Value) -> Result<CommandResult, CmdError> {

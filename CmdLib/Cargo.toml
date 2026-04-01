@@ -10,7 +10,9 @@ name = "canweeb_cmdlib"
 path = "src/lib.rs"
 
 [dependencies]
+gpio-cdev = "0.6"
 i2cdev = "0.6"
+libc = "0.2"
 num-traits = "0.2"
 once_cell = "1.19"
 rand = "0.8"

@@ -2,6 +2,20 @@
 
 この文書は、**実際に実装されている API だけ**を記載します。
 
+## バックエンド
+
+CmdLibは2つのバックエンドを提供します：
+
+- **SimBackend**: シミュレーション用（テスト・デバッグ向け）
+  - `use_sim_backend()` で有効化
+  - 実機不要で全API動作確認可能
+  
+- **RealBackend**: 実機用（Raspberry Pi 3/4/5対応）
+  - `use_real_backend()` で有効化
+  - `/dev/gpiochip*` 経由でGPIO直接制御
+  - `/sys/class/pwm/pwmchip*` 経由でハードウェアPWM制御
+  - GPIO 12, 13, 18, 19でanalogWrite()がハードウェアPWM動作
+
 ## 1. Arduino 互換 API
 
 ### Digital I/O
@@ -33,11 +47,11 @@
 
 ### Analog I/O
 
-- `analogRead(pin)`
+- `analogRead(pin)` ※Raspberry Piは内蔵ADC非搭載、外部ADC（MCP3008等）必要
 - `analogReadResolution(bits)`
 - `analogReference(reference)`
-- `analogWrite(pin, value)`
-- `analogWriteResolution(bits)`
+- `analogWrite(pin, value)` **★実機でハードウェアPWM動作（GPIO 12, 13, 18, 19）**
+- `analogWriteResolution(bits)` デフォルト8bit（0-255）、最大16bit（0-65535）
 
 ### Trigonometry
 
@@ -150,22 +164,51 @@
 - `send_child_program!(child_id, program_name)`
 - `run_child_program!(program_name)`
 
-## 4. 実行権限
+## 4. 実行権限（RealBackend使用時）
 
-実機で使う場合は権限が必要です。
+実機で使う場合は以下のデバイスへのアクセス権限が必要です：
 
-- GPIO: `/dev/gpiochip*`
-- SPI: `/dev/spidev*`
-- I2C: `/dev/i2c-*`
-- Serial: `/dev/tty*`
-- Input (Keyboard/Mouse): `/dev/input/*`
-- Wi-Fi 制御: `nmcli` 実行権限
+| デバイス | パス | 推奨グループ | 用途 |
+|---------|------|-------------|------|
+| GPIO | `/dev/gpiochip*` | `gpio` | digitalWrite/Read, pinMode |
+| PWM | `/sys/class/pwm/pwmchip*` | - | analogWrite (ハードウェアPWM) |
+| SPI | `/dev/spidev*` | `spi` | SPI通信 |
+| I2C | `/dev/i2c-*` | `i2c` | Wire (I2C通信) |
+| Serial | `/dev/tty*` | `dialout` | Serial通信 |
+| Input | `/dev/input/*` | `input` | Keyboard/Mouse |
+| Wi-Fi | `nmcli` | - | WiFi制御 |
+
+**セットアップ例:**
+```bash
+sudo usermod -a -G gpio,spi,i2c,dialout,input $USER
+# 再ログイン後に有効
+```
 
 ## 5. 動作確認コマンド
 
+### シミュレーション（実機不要）
 ```bash
 cd CmdLib
 cargo test
 cargo run --example standalone_drive
 ```
+
+### 実機テスト（要：Raspberry Pi 3/4/5）
+```bash
+cd CmdLib
+# GPIO/PWM実機テスト
+cargo run --example real_gpio_pwm --release
+
+# 実行前に権限確認
+ls -l /dev/gpiochip0
+groups  # gpioグループに所属しているか確認
+```
+
+### ハードウェアPWM対応ピン
+
+`analogWrite()` で以下のピンがハードウェアPWMとして動作：
+- **GPIO 12** (Pin 32)
+- **GPIO 13** (Pin 33)  
+- **GPIO 18** (Pin 12) ← おすすめ
+- **GPIO 19** (Pin 35)
 
