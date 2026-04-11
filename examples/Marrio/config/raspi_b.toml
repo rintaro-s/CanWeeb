@@ -1,0 +1,45 @@
+# ============================================================
+# Marrio - Raspberry Pi B (ロータリーエンコーダ → 左右移動) ノード設定
+# ============================================================
+
+[node]
+node_id = "marrio-raspi-b"
+role = "child"
+tags = ["sensor", "encoder"]
+
+[storage]
+root = "./data/raspi_b"
+retention_seconds = 3600
+
+[web]
+bind = "0.0.0.0:8080"
+
+[transport]
+network_listen = "0.0.0.0:7002"
+connect_interval_ms = 1500
+heartbeat_interval_ms = 1000
+ack_timeout_ms = 2500
+max_hops = 4
+
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
+
+[wifi]
+interface = "wlan0"
+auto_manage = false
+desired_mode = "child"
+hotspot_ssid = "CANweeb-Parent"
+hotspot_password = "canweeb1234"
+hotspot_connection_name = "CANweeb Hotspot"
+status_interval_ms = 2000
+
+[[peers]]
+node_id = "marrio-pc"
+role = "parent"
+relationship = "parent"
+preferred_transport_order = ["network"]
+tags = ["game", "camera", "ui"]
