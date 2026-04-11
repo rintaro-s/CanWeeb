@@ -28,6 +28,31 @@ fn digital_and_analog_work() {
 }
 
 #[test]
+fn rotary_encoder_counts_quadrature_steps() {
+    let _guard = test_guard();
+    use_sim_backend().expect("switch backend failed");
+
+    let encoder = RotaryEncoder::new(17, 18).expect("encoder init failed");
+    assert_eq!(encoder.read().expect("initial read failed"), 0);
+
+    digitalWrite("17", false).expect("set a low failed");
+    digitalWrite("18", true).expect("set b high failed");
+    assert_eq!(encoder.read().expect("step 1 failed"), 1);
+
+    digitalWrite("17", true).expect("set a high failed");
+    assert_eq!(encoder.read().expect("step 2 failed"), 2);
+
+    digitalWrite("18", false).expect("set b low failed");
+    assert_eq!(encoder.read().expect("step 3 failed"), 3);
+
+    digitalWrite("17", false).expect("set a low failed");
+    assert_eq!(encoder.read().expect("step 4 failed"), 4);
+
+    encoder.reset().expect("encoder reset failed");
+    assert_eq!(encoder.read().expect("post-reset read failed"), 0);
+}
+
+#[test]
 fn math_bits_chars_and_time_work() {
     assert_eq!(abs(-7_i32), 7_i32);
     assert_eq!(constrain(42, 0, 10), 10);

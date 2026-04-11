@@ -18,6 +18,7 @@ Arduino 互換関数として、以下を実装しています。
 - Math: `abs()`, `constrain()`, `map()`, `max()`, `min()`, `pow()`, `sq()`, `sqrt()`
 - Bits and Bytes: `bit()`, `bitClear()`, `bitRead()`, `bitSet()`, `bitWrite()`, `highByte()`, `lowByte()`
 - Analog I/O: `analogRead()`, `analogReadResolution()`, `analogReference()`, `analogWrite()`, `analogWriteResolution()`
+- Rotary Encoder: `RotaryEncoder` / `encoderRead()` / `encoderReset()`
 - Trigonometry: `cos()`, `sin()`, `tan()`
 - External Interrupts: `attachInterrupt()`, `detachInterrupt()`, `digitalPinToInterrupt()`
 - Advanced I/O: `noTone()`, `pulseIn()`, `pulseInLong()`, `shiftIn()`, `shiftOut()`, `tone()`
@@ -124,6 +125,25 @@ fn main() -> Result<(), CmdError> {
 }
 ```
 
+    ### ロータリーエンコーダの読み取り
+
+    `RotaryEncoder` は GPIO のエッジイベントをバックグラウンドで監視し、カウントを常時積算します。`read()` は今の累積値を返します。
+
+    ```rust
+    use canweeb_cmdlib::prelude::*;
+
+    fn main() -> Result<(), CmdError> {
+        use_real_backend()?;
+
+        let encoder = RotaryEncoder::new(17, 18)?;
+        loop {
+            let count = encoder.read()?;
+            println!("encoder count: {}", count);
+            delay(10);
+        }
+    }
+    ```
+
 ## Raspberry Pi セットアップ
 
 ### 対応ハードウェア
@@ -199,7 +219,80 @@ cargo run --example standalone_drive
 
 # 実機GPIO/PWMテスト（要：Raspberry Pi）
 cargo run --example real_gpio_pwm --release
+
+# Lchika 実行（実機）
+cargo run --example Lchika --release
+
+# いったんビルドしてバイナリを直接起動する場合
+cargo build --release --example Lchika
+./target/release/examples/Lchika
 ```
+
+### 常駐デーモンでの登録実行
+
+`cmdlibd` を使うと、プログラム登録・起動・停止・TTL指定・外部制御・TUI操作ができます。
+
+```bash
+# cmdlibd の起動（手動）
+cargo run --release --bin cmdlibd -- daemon
+
+# Lchika を登録
+cargo run --release --bin cmdlibd -- register \
+    --name lchika \
+    --command "$PWD/target/release/examples/Lchika" \
+    --ttl-seconds 10
+
+# 登録済みプログラムを実行
+cargo run --release --bin cmdlibd -- run --name lchika
+
+# 実行時だけ TTL を上書き
+cargo run --release --bin cmdlibd -- run --name lchika --ttl-seconds 3
+
+# 実行中を停止
+cargo run --release --bin cmdlibd -- stop --name lchika
+
+# 登録一覧と状態確認
+cargo run --release --bin cmdlibd -- list
+cargo run --release --bin cmdlibd -- status
+```
+
+### 外部プログラム実行と外部制御
+
+外部コマンドを一時実行したい場合は `run-raw` を使います。
+
+```bash
+cargo run --release --bin cmdlibd -- run-raw \
+    --command /bin/sh \
+    --arg -lc \
+    --arg 'echo hello from daemon' \
+    --ttl-seconds 5
+```
+
+外部プログラムからは、同じ `cmdlibd` CLI を呼ぶだけで制御できます（register/run/stop/status）。
+
+### TUI モード
+
+```bash
+cargo run --release --bin cmdlibd -- tui
+```
+
+- Up/Down: 選択
+- Enter: 起動
+- s: 停止
+- r: 更新
+- q: 終了
+
+### systemd 常駐化
+
+```bash
+# サービス導入
+bash scripts/install_cmdlibd_service.sh
+
+# 状態確認
+sudo systemctl status cmdlibd.service
+```
+
+必要に応じて `systemd/cmdlibd.service` の `User` や `Group` を環境に合わせて変更してください。
 
 ### トラブルシューティング
 

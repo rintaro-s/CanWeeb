@@ -1,0 +1,17 @@
+[Unit]
+Description=CmdLib Program Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=gpio
+RuntimeDirectory=cmdlibd
+StateDirectory=cmdlibd
+ExecStartPre=/usr/bin/rm -f /run/cmdlibd/cmdlibd.sock
+ExecStart=/usr/local/bin/cmdlibd daemon --socket /run/cmdlibd/cmdlibd.sock --registry /var/lib/cmdlibd/registry.json --tick-ms 50
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

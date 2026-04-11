@@ -1,5 +1,6 @@
 use crate::command::CommandResult;
 use crate::error::CmdError;
+use crate::encoder::{quadrature_delta, quadrature_state};
 use crate::types::{ControllerState, Level, PinMode, SafetyState};
 use crate::CommandEnvelope;
 use serde_json::{json, Map, Value};
@@ -26,6 +27,7 @@ struct SimState {
     pwm_profiles: HashMap<u8, PwmProfile>,
     motors: HashMap<String, f64>,
     uart_ports: HashMap<String, UartState>,
+    encoder_states: HashMap<String, EncoderState>,
     controller: ControllerState,
     safety: SimSafety,
     history: Vec<CommandEnvelope>,
@@ -44,6 +46,7 @@ impl Default for SimState {
             pwm_profiles: HashMap::new(),
             motors: HashMap::new(),
             uart_ports: HashMap::new(),
+            encoder_states: HashMap::new(),
             controller: ControllerState::default(),
             safety: SimSafety::default(),
             history: Vec::new(),
@@ -82,6 +85,31 @@ struct UartState {
 struct ToneState {
     frequency_hz: u32,
     duration_ms: Option<u64>,
+}
+
+struct EncoderState {
+    pin_a: String,
+    pin_b: String,
+    last_state: u8,
+    count: i64,
+}
+
+impl EncoderState {
+    fn new(pin_a: String, pin_b: String, last_state: u8) -> Self {
+        Self {
+            pin_a,
+            pin_b,
+            last_state,
+            count: 0,
+        }
+    }
+
+    fn update(&mut self, current_state: u8) -> i64 {
+        let delta = quadrature_delta(self.last_state, current_state);
+        self.count += delta;
+        self.last_state = current_state;
+        delta
+    }
 }
 
 #[derive(Clone)]
@@ -184,13 +212,7 @@ impl Backend for SimBackend {
             ("gpio", "digital_write") => {
                 let pin = arg_string(&args, "pin")?;
                 let level = parse_level(args.get("level"))?;
-                let entry = state
-                    .pins
-                    .get_mut(&pin)
-                    .ok_or_else(|| CmdError::PinNotConfigured(pin.clone()))?;
-                if !matches!(entry.mode, PinMode::Output | PinMode::Pwm) {
-                    return Err(CmdError::PinModeMismatch(pin));
-                }
+                let entry = state.pins.entry(pin.clone()).or_default();
                 entry.level = level;
                 CommandResult::ok_with_data(command.id, "digital write ok", json!({ "level": level }))
             }
@@ -289,6 +311,78 @@ impl Backend for SimBackend {
                     command.id,
                     "analog write resolution updated",
                     json!({ "bits": bits }),
+                )
+            }
+            ("sensor", "encoder_read") => {
+                let (key, pin_a, pin_b) = encoder_identity(&args)?;
+                let current_state = quadrature_state(
+                    read_pin_level(&state.pins, &pin_a),
+                    read_pin_level(&state.pins, &pin_b),
+                );
+
+                let entry = state.encoder_states.entry(key.clone()).or_insert_with(|| {
+                    EncoderState::new(pin_a.clone(), pin_b.clone(), current_state)
+                });
+
+                if entry.pin_a != pin_a || entry.pin_b != pin_b {
+                    return Err(CmdError::InvalidArgument {
+                        key: "pin_a|pin_b".to_string(),
+                        reason: format!(
+                            "encoder `{key}` was already bound to pins {} / {}",
+                            entry.pin_a, entry.pin_b
+                        ),
+                    });
+                }
+
+                let delta = entry.update(current_state);
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "encoder read ok",
+                    json!({
+                        "key": key,
+                        "pin_a": pin_a,
+                        "pin_b": pin_b,
+                        "count": entry.count,
+                        "delta": delta,
+                        "state": current_state,
+                    }),
+                )
+            }
+            ("sensor", "encoder_reset") => {
+                let (key, pin_a, pin_b) = encoder_identity(&args)?;
+                let current_state = quadrature_state(
+                    read_pin_level(&state.pins, &pin_a),
+                    read_pin_level(&state.pins, &pin_b),
+                );
+
+                let entry = state.encoder_states.entry(key.clone()).or_insert_with(|| {
+                    EncoderState::new(pin_a.clone(), pin_b.clone(), current_state)
+                });
+
+                if entry.pin_a != pin_a || entry.pin_b != pin_b {
+                    return Err(CmdError::InvalidArgument {
+                        key: "pin_a|pin_b".to_string(),
+                        reason: format!(
+                            "encoder `{key}` was already bound to pins {} / {}",
+                            entry.pin_a, entry.pin_b
+                        ),
+                    });
+                }
+
+                entry.count = 0;
+                entry.last_state = current_state;
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "encoder reset ok",
+                    json!({
+                        "key": key,
+                        "pin_a": pin_a,
+                        "pin_b": pin_b,
+                        "count": entry.count,
+                        "state": entry.last_state,
+                    }),
                 )
             }
             ("pwm", "pwm_frequency") => {
@@ -574,6 +668,40 @@ fn arg_f64_any(args: &Map<String, Value>, keys: &[&str]) -> Result<f64, CmdError
             key: keys.join("|"),
             reason: "missing number".to_string(),
         })
+}
+
+fn read_pin_level(pins: &HashMap<String, PinState>, pin: &str) -> bool {
+    pins.get(pin).map(|entry| entry.level == Level::High).unwrap_or(false)
+}
+
+fn encoder_identity(args: &Map<String, Value>) -> Result<(String, String, String), CmdError> {
+    let pin_a = arg_pin_any(args, &["pin_a", "a", "channel_a"])?;
+    let pin_b = arg_pin_any(args, &["pin_b", "b", "channel_b"])?;
+    let key = args
+        .get("name")
+        .or_else(|| args.get("id"))
+        .or_else(|| args.get("encoder"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("{}:{}", pin_a, pin_b));
+    Ok((key, pin_a, pin_b))
+}
+
+fn arg_pin_any(args: &Map<String, Value>, keys: &[&str]) -> Result<String, CmdError> {
+    for key in keys {
+        if let Some(value) = args.get(*key) {
+            if let Some(text) = value.as_str() {
+                return Ok(text.to_string());
+            }
+            if let Some(number) = value.as_u64() {
+                return Ok(number.to_string());
+            }
+        }
+    }
+    Err(CmdError::InvalidArgument {
+        key: keys.join("|"),
+        reason: "missing pin value".to_string(),
+    })
 }
 
 fn parse_pin_mode(value: Option<&Value>) -> Result<PinMode, CmdError> {

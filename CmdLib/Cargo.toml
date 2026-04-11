@@ -10,6 +10,8 @@ name = "canweeb_cmdlib"
 path = "src/lib.rs"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.28"
 gpio-cdev = "0.6"
 i2cdev = "0.6"
 libc = "0.2"

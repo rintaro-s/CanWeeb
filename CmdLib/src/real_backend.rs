@@ -1,11 +1,14 @@
 use crate::command::CommandResult;
 use crate::error::CmdError;
+use crate::encoder::{quadrature_delta, quadrature_state};
 use crate::types::{Level, PinMode};
 use crate::CommandEnvelope;
-use gpio_cdev::{Chip, LineHandle, LineRequestFlags};
+use gpio_cdev::{Chip, EventRequestFlags, LineEventHandle, LineHandle, LineRequestFlags};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::os::fd::AsRawFd;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -20,6 +23,7 @@ struct RealState {
     gpio_modes: HashMap<u32, PinMode>,
     pwm_channels: HashMap<u32, PwmChannel>,
     pwm_profiles: HashMap<u32, PwmProfile>,
+    encoder_states: HashMap<String, std::sync::Arc<Mutex<EncoderSnapshot>>>,
     analog_read_resolution: u8,
     analog_write_resolution: u8,
     analog_reference: String,
@@ -35,6 +39,31 @@ struct PwmProfile {
     frequency_hz: u32,
     duty_percent: f64,
     enabled: bool,
+}
+
+struct EncoderSnapshot {
+    pin_a: String,
+    pin_b: String,
+    last_state: u8,
+    count: i64,
+}
+
+impl EncoderSnapshot {
+    fn new(pin_a: String, pin_b: String, last_state: u8) -> Self {
+        Self {
+            pin_a,
+            pin_b,
+            last_state,
+            count: 0,
+        }
+    }
+
+    fn update(&mut self, current_state: u8) -> i64 {
+        let delta = quadrature_delta(self.last_state, current_state);
+        self.count += delta;
+        self.last_state = current_state;
+        delta
+    }
 }
 
 impl Default for PwmProfile {
@@ -57,6 +86,7 @@ impl RealBackend {
                 gpio_modes: HashMap::new(),
                 pwm_channels: HashMap::new(),
                 pwm_profiles: HashMap::new(),
+                encoder_states: HashMap::new(),
                 analog_read_resolution: 10,
                 analog_write_resolution: 8,
                 analog_reference: "default".to_string(),
@@ -435,6 +465,46 @@ impl crate::Backend for RealBackend {
                     json!({ "bits": bits }),
                 )
             }
+            ("sensor", "encoder_read") => {
+                let (key, pin_a, pin_b) = encoder_identity(&args)?;
+                let snapshot = Self::ensure_encoder_monitor(&mut state, &key, &pin_a, &pin_b)?;
+                let snapshot = snapshot
+                    .lock()
+                    .map_err(|_| CmdError::Backend("encoder snapshot mutex poisoned".to_string()))?;
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "encoder read ok",
+                    json!({
+                        "key": key,
+                        "pin_a": pin_a,
+                        "pin_b": pin_b,
+                        "count": snapshot.count,
+                        "state": snapshot.last_state,
+                    }),
+                )
+            }
+            ("sensor", "encoder_reset") => {
+                let (key, pin_a, pin_b) = encoder_identity(&args)?;
+                let snapshot = Self::ensure_encoder_monitor(&mut state, &key, &pin_a, &pin_b)?;
+                let mut snapshot = snapshot
+                    .lock()
+                    .map_err(|_| CmdError::Backend("encoder snapshot mutex poisoned".to_string()))?;
+
+                snapshot.count = 0;
+
+                CommandResult::ok_with_data(
+                    command.id,
+                    "encoder reset ok",
+                    json!({
+                        "key": key,
+                        "pin_a": pin_a,
+                        "pin_b": pin_b,
+                        "count": snapshot.count,
+                        "state": snapshot.last_state,
+                    }),
+                )
+            }
             ("analog", "analog_read_resolution") => {
                 let bits = arg_u8(&args, "bits")?;
                 if bits == 0 || bits > 16 {
@@ -549,6 +619,170 @@ fn arg_f64_any(args: &Map<String, Value>, keys: &[&str]) -> Result<f64, CmdError
             key: keys.join("|"),
             reason: "missing number".to_string(),
         })
+}
+
+fn encoder_identity(args: &Map<String, Value>) -> Result<(String, String, String), CmdError> {
+    let pin_a = arg_pin_any(args, &["pin_a", "a", "channel_a"])?;
+    let pin_b = arg_pin_any(args, &["pin_b", "b", "channel_b"])?;
+    let key = args
+        .get("name")
+        .or_else(|| args.get("id"))
+        .or_else(|| args.get("encoder"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("{}:{}", pin_a, pin_b));
+    Ok((key, pin_a, pin_b))
+}
+
+static ENCODER_THREAD_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+fn arg_pin_any(args: &Map<String, Value>, keys: &[&str]) -> Result<String, CmdError> {
+    for key in keys {
+        if let Some(value) = args.get(*key) {
+            if let Some(text) = value.as_str() {
+                return Ok(text.to_string());
+            }
+            if let Some(number) = value.as_u64() {
+                return Ok(number.to_string());
+            }
+        }
+    }
+    Err(CmdError::InvalidArgument {
+        key: keys.join("|"),
+        reason: "missing pin value".to_string(),
+    })
+}
+
+impl RealBackend {
+    fn ensure_encoder_monitor(
+        state: &mut RealState,
+        key: &str,
+        pin_a: &str,
+        pin_b: &str,
+    ) -> Result<std::sync::Arc<Mutex<EncoderSnapshot>>, CmdError> {
+        if let Some(existing) = state.encoder_states.get(key) {
+            let snapshot = existing
+                .lock()
+                .map_err(|_| CmdError::Backend("encoder snapshot mutex poisoned".to_string()))?;
+            if snapshot.pin_a != pin_a || snapshot.pin_b != pin_b {
+                return Err(CmdError::InvalidArgument {
+                    key: "pin_a|pin_b".to_string(),
+                    reason: format!(
+                        "encoder `{key}` was already bound to pins {} / {}",
+                        snapshot.pin_a, snapshot.pin_b
+                    ),
+                });
+            }
+            return Ok(existing.clone());
+        }
+
+        let pin_a_num = Self::bcm_to_line(pin_a)?;
+        let pin_b_num = Self::bcm_to_line(pin_b)?;
+        let chip = state
+            .gpio_chip
+            .as_mut()
+            .ok_or_else(|| CmdError::Backend("GPIO chip not initialized".to_string()))?;
+
+        let event_a = chip
+            .get_line(pin_a_num)
+            .map_err(|e| CmdError::Backend(format!("Failed to get GPIO line {}: {}", pin_a_num, e)))?
+            .events(LineRequestFlags::INPUT, EventRequestFlags::BOTH_EDGES, "canweeb-encoder-a")
+            .map_err(|e| CmdError::Backend(format!("Failed to request encoder A events: {}", e)))?;
+        let event_b = chip
+            .get_line(pin_b_num)
+            .map_err(|e| CmdError::Backend(format!("Failed to get GPIO line {}: {}", pin_b_num, e)))?
+            .events(LineRequestFlags::INPUT, EventRequestFlags::BOTH_EDGES, "canweeb-encoder-b")
+            .map_err(|e| CmdError::Backend(format!("Failed to request encoder B events: {}", e)))?;
+
+        let initial_state = quadrature_state(
+            event_a
+                .get_value()
+                .map_err(|e| CmdError::Backend(format!("Failed to read encoder A value: {}", e)))?
+                == 1,
+            event_b
+                .get_value()
+                .map_err(|e| CmdError::Backend(format!("Failed to read encoder B value: {}", e)))?
+                == 1,
+        );
+
+        let snapshot = std::sync::Arc::new(Mutex::new(EncoderSnapshot::new(
+            pin_a.to_string(),
+            pin_b.to_string(),
+            initial_state,
+        )));
+        let monitor_snapshot = snapshot.clone();
+        let thread_name = format!("canweeb-encoder-{}", ENCODER_THREAD_COUNTER.fetch_add(1, Ordering::Relaxed));
+
+        thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || Self::run_encoder_monitor(event_a, event_b, monitor_snapshot))
+            .map_err(|e| CmdError::Backend(format!("Failed to spawn encoder monitor: {}", e)))?;
+
+        state.encoder_states.insert(key.to_string(), snapshot.clone());
+        Ok(snapshot)
+    }
+
+    fn run_encoder_monitor(
+        mut event_a: LineEventHandle,
+        mut event_b: LineEventHandle,
+        snapshot: std::sync::Arc<Mutex<EncoderSnapshot>>,
+    ) {
+        Self::try_raise_realtime_priority();
+
+        let fd_a = event_a.as_raw_fd();
+        let fd_b = event_b.as_raw_fd();
+        let mut poll_fds = [
+            libc::pollfd {
+                fd: fd_a,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: fd_b,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+
+        loop {
+            let rc = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as libc::nfds_t, -1) };
+            if rc < 0 {
+                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or_default();
+                if errno == libc::EINTR {
+                    continue;
+                }
+                break;
+            }
+
+            let mut touched = false;
+            if poll_fds[0].revents & libc::POLLIN != 0 {
+                let _ = event_a.get_event();
+                touched = true;
+            }
+            if poll_fds[1].revents & libc::POLLIN != 0 {
+                let _ = event_b.get_event();
+                touched = true;
+            }
+
+            if !touched {
+                continue;
+            }
+
+            let level_a = event_a.get_value().unwrap_or(0) == 1;
+            let level_b = event_b.get_value().unwrap_or(0) == 1;
+            let current_state = quadrature_state(level_a, level_b);
+
+            if let Ok(mut guard) = snapshot.lock() {
+                let _ = guard.update(current_state);
+            }
+        }
+    }
+
+    fn try_raise_realtime_priority() {
+        let param = libc::sched_param { sched_priority: 80 };
+        let _ = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
+    }
+
 }
 
 fn parse_pin_mode(value: Option<&Value>) -> Result<PinMode, CmdError> {

@@ -654,6 +654,24 @@ pub fn pulseInLong(pin: &str, state: bool, timeout_us: u64) -> Result<u64, CmdEr
     Ok(pulse_start.elapsed().as_micros() as u64)
 }
 
+pub fn encoderRead(pin_a: u8, pin_b: u8) -> Result<i64, CmdError> {
+    let data = command_ok(
+        "sensor",
+        "encoder_read",
+        json!({ "pin_a": pin_a, "pin_b": pin_b }),
+    )?;
+    Ok(data.get("count").and_then(|value| value.as_i64()).unwrap_or(0))
+}
+
+pub fn encoderReset(pin_a: u8, pin_b: u8) -> Result<(), CmdError> {
+    command_ok(
+        "sensor",
+        "encoder_reset",
+        json!({ "pin_a": pin_a, "pin_b": pin_b }),
+    )?;
+    Ok(())
+}
+
 pub fn shiftIn(data_pin: &str, clock_pin: &str, order: BitOrder) -> Result<u8, CmdError> {
     let mut value = 0u8;
     for i in 0..8 {

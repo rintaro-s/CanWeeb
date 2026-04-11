@@ -1,6 +1,7 @@
 mod backend;
 pub mod arduino;
 mod command;
+mod encoder;
 mod error;
 mod real_backend;
 mod remote_exec;
@@ -15,6 +16,7 @@ pub mod prelude;
 
 pub use backend::{Backend, SimBackend};
 pub use command::{CommandEnvelope, CommandResult};
+pub use encoder::RotaryEncoder;
 pub use error::CmdError;
 pub use real_backend::RealBackend;
 pub use pwm::PwmOutput;
