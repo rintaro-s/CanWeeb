@@ -5,3 +5,7 @@ CmdLib/target/debug/
 */venv/
 */node_modules/
 target/release/
+examples/Marrio/config/data/pc/
+examples/Marrio/raspi_a/target/debug/
+examples/Marrio/raspi_b/target/debug/
+target/debug/

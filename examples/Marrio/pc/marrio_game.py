@@ -491,15 +491,8 @@ class MarrioGame:
         pygame.display.set_caption("Marrio - Face Control Edition")
         self.clock  = pygame.time.Clock()
 
-        # フォント（pygame.font使用不可のため None）
-        try:
-            self.font_big   = pygame.font.SysFont("monospace", 48, bold=True)
-            self.font_mid   = pygame.font.SysFont("monospace", 28, bold=True)
-            self.font_small = pygame.font.SysFont("monospace", 20)
-        except:
-            self.font_big   = None
-            self.font_mid   = None
-            self.font_small = None
+        # テキスト描画は _draw_simple_text (ピクセル描画) で行う。
+        # pygame.font は Python 3.14 + pygame 2.6.1 で circular import を起こすため使用しない。
 
         # CanWeeb クライアント
         self.cwb = CanWeebClient(CANWEEB_API)
