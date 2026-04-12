@@ -37,6 +37,7 @@ pub async fn serve(runtime: Arc<Runtime>) -> Result<()> {
         .route("/api/streams", get(list_streams))
         .route("/api/streams/:stream_id", get(get_stream))
         .route("/api/wifi-direct/run", post(run_wifi_direct))
+        .route("/ws/inbox", get(ws_inbox))
         .route("/ws/topics", get(ws_topics))
         .route("/ws/streams", get(ws_streams))
         .with_state(runtime.clone());
@@ -236,6 +237,44 @@ async fn list_streams(State(runtime): State<Arc<Runtime>>) -> Json<Vec<StreamSum
             })
             .collect(),
     )
+}
+
+/// WebSocket endpoint: inbox 追加通知を push する
+async fn ws_inbox(
+    ws: WebSocketUpgrade,
+    State(runtime): State<Arc<Runtime>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_ws_inbox(socket, runtime))
+}
+
+async fn handle_ws_inbox(mut socket: WebSocket, runtime: Arc<Runtime>) {
+    let mut rx = runtime.storage().inbox_tx.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(item) => {
+                let msg = serde_json::json!({
+                    "message_id": item.envelope.message_id,
+                    "source_node": item.envelope.source_node,
+                    "target": item.envelope.target.label(),
+                    "traffic_class": item.envelope.traffic_class.label(),
+                    "topic": item.envelope.topic,
+                    "subject": item.envelope.subject,
+                    "content_type": item.envelope.content_type,
+                    "created_at_ms": item.envelope.created_at_ms,
+                    "received_at_ms": item.received_at_ms,
+                    "payload_size": item.envelope.payload.len(),
+                    "preview": payload_preview(&item.envelope.content_type, &item.envelope.payload),
+                });
+                if socket.send(Message::Text(msg.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                warn!(n, "ws_inbox lagged");
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 /// WebSocket endpoint: 全 topic の telemetry 更新を push する

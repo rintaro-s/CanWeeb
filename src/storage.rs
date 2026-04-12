@@ -72,6 +72,8 @@ pub struct Storage {
     stream_buf: RwLock<HashMap<Uuid, InProgressStream>>,
     /// ring buffer: 完成した stream の最新 MAX_STREAM_RING 個
     stream_ring: RwLock<VecDeque<AssembledStream>>,
+    /// inbox 更新を WebSocket 側に通知する broadcast チャンネル
+    pub inbox_tx: broadcast::Sender<InboxEntry>,
     /// topic 更新を WebSocket 側に通知する broadcast チャンネル
     pub topic_tx: broadcast::Sender<TopicEntry>,
     /// stream 完成を WebSocket 側に通知する broadcast チャンネル
@@ -110,6 +112,7 @@ impl Storage {
             data.durable_seen.insert(id);
         }
 
+        let (inbox_tx, _) = broadcast::channel(256);
         let (topic_tx, _) = broadcast::channel(256);
         let (stream_tx, _) = broadcast::channel(32);
 
@@ -120,6 +123,7 @@ impl Storage {
             data: RwLock::new(data),
             stream_buf: RwLock::new(HashMap::new()),
             stream_ring: RwLock::new(VecDeque::new()),
+            inbox_tx,
             topic_tx,
             stream_tx,
         })
@@ -296,7 +300,8 @@ impl Storage {
         } else {
             remember_transient_seen(&mut data, message_id);
         }
-        data.inbox.insert(message_id, item);
+        data.inbox.insert(message_id, item.clone());
+        let _ = self.inbox_tx.send(item);
         Ok(true)
     }
 

@@ -138,7 +138,7 @@ async fn send_move(client: &Client, api: &str, direction: &str, count: i32) -> R
     let url = format!("{}/api/messages", api);
     let body = json!({
         "target": format!("node:{}", PC_NODE),
-        "traffic_class": "telemetry",
+        "traffic_class": "control",
         "topic": "marrio/input/move",
         "subject": "move",
         "content_type": "application/json",

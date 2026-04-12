@@ -88,15 +88,10 @@ PLAYER_LIVES  = 3
 # CanWeeb クライアント (WebSocket優先 / HTTPポーリングフォールバック)
 # ---------------------------------------------------------------------------
 class CanWeebClient:
-    """
-    WS モード (websocket-client インストール済み):
-      /ws/topics を購読 → WS メッセージの "preview" フィールドに
-      payload_preview() の結果(最大160文字)が入る。
-      raspi の JSON ペイロードは ~65文字なので preview = 完全ペイロード。
-      → HTTP 追加取得不要、WSスレッドをブロックしない。
+    """Marrio 用の CWB イベント受信クライアント。
 
-    フォールバック (websocket-client なし):
-      /api/topic を POLL_INTERVAL 秒おきにポーリング。
+    raspi からの jump / move は Control メッセージとして送る。
+    そのため realtime 受信経路は /ws/inbox、フォールバックは /api/inbox を使う。
     """
 
     def __init__(self, api_base: str):
@@ -105,8 +100,11 @@ class CanWeebClient:
         self._jump_pending   = False
         self._move_dir: Optional[str] = None
         self._move_expires: float     = 0.0
-        self._seen_topics: dict[str, float] = {}
+        self._seen_ids: set[str] = set()
+        self._newest_inbox_ms: int = 0
         self._running = True
+
+        self._initialize_inbox_watermark()
 
         if _HAS_WEBSOCKET:
             t = threading.Thread(target=self._ws_loop, daemon=True)
@@ -135,12 +133,29 @@ class CanWeebClient:
     def stop(self):
         self._running = False
 
+    def _initialize_inbox_watermark(self):
+        try:
+            resp = requests.get(f"{self.api_base}/api/inbox", timeout=2.0)
+            if resp.status_code != 200:
+                return
+            items = resp.json()
+            relevant = [
+                item.get("received_at_ms", 0)
+                for item in items
+                if item.get("subject") in ("jump", "move")
+            ]
+            if relevant:
+                self._newest_inbox_ms = max(relevant)
+            print(f"[CWB] inbox watermark = {self._newest_inbox_ms}")
+        except Exception as e:
+            print(f"[CWB] inbox watermark 初期化失敗: {e}")
+
     # ---- WebSocket ループ ----
 
     def _ws_loop(self):
         ws_url = (self.api_base
                   .replace("https://", "wss://")
-                  .replace("http://",  "ws://")) + "/ws/topics"
+                  .replace("http://",  "ws://")) + "/ws/inbox"
         while self._running:
             try:
                 ws = websocket.WebSocket()
@@ -167,35 +182,9 @@ class CanWeebClient:
                 time.sleep(3.0)
 
     def _handle_ws_msg(self, raw: str):
-        """
-        WS メッセージ例:
-          {"topic":"marrio/input/move","preview":"{\"direction\":\"right\",...}","..."}
-        preview に完全ペイロードが入っているので HTTP 追加取得不要。
-        """
         try:
             msg   = json.loads(raw)
-            topic = msg.get("topic", "")
-
-            if topic == "marrio/input/jump":
-                with self._lock:
-                    self._jump_pending = True
-                print("[CWB] >>> JUMP 受信")
-
-            elif topic == "marrio/input/move":
-                preview = msg.get("preview", "")
-                direction = None
-                try:
-                    direction = json.loads(preview).get("direction")
-                except Exception:
-                    pass
-                if direction in ("left", "right"):
-                    with self._lock:
-                        self._move_dir     = direction
-                        self._move_expires = time.monotonic() + MOVE_HOLD_SEC
-                    print(f"[CWB] >>> MOVE 受信: {direction}")
-                else:
-                    print(f"[CWB] MOVE preview パース失敗: {preview!r}")
-
+            self._handle_inbox_event(msg)
         except Exception as e:
             print(f"[CWB] WS メッセージ処理エラー: {e}")
 
@@ -204,44 +193,52 @@ class CanWeebClient:
     def _poll_loop(self):
         while self._running:
             try:
-                self._poll_one("marrio/input/jump", self._on_jump_raw)
-                self._poll_one("marrio/input/move",  self._on_move_raw)
+                self._poll_inbox()
             except Exception:
                 pass
-            time.sleep(POLL_INTERVAL)
+            time.sleep(max(POLL_INTERVAL, 0.2))
 
-    def _poll_one(self, topic: str, handler):
+    def _poll_inbox(self):
         try:
-            resp = requests.get(          # Session を使わず都度生成 (スレッドセーフ)
-                f"{self.api_base}/api/topic",
-                params={"name": topic},
-                timeout=1.5,
-            )
+            resp = requests.get(f"{self.api_base}/api/inbox", timeout=1.5)
             if resp.status_code != 200:
                 return
-            data    = resp.json()
-            recv_ms = data.get("received_at_ms", 0)
-            if recv_ms > self._seen_topics.get(topic, 0):
-                self._seen_topics[topic] = recv_ms
-                b64 = data.get("payload_base64", "")
-                if b64:
-                    handler(base64.b64decode(b64).decode("utf-8", errors="replace"))
+            items = resp.json()
+            fresh = [
+                item for item in items
+                if item.get("subject") in ("jump", "move")
+                and item.get("message_id") not in self._seen_ids
+                and item.get("received_at_ms", 0) > self._newest_inbox_ms
+            ]
+            fresh.sort(key=lambda item: item.get("received_at_ms", 0))
+            for item in fresh:
+                self._handle_inbox_event(item)
         except Exception:
             pass
 
-    def _on_jump_raw(self, raw: str):
-        with self._lock:
-            self._jump_pending = True
-        print("[CWB] >>> JUMP 受信 (HTTP)")
-
-    def _on_move_raw(self, raw: str):
+    def _handle_inbox_event(self, item: dict):
         try:
-            direction = json.loads(raw).get("direction", "")
-            if direction in ("left", "right"):
+            message_id = item.get("message_id")
+            if message_id:
+                self._seen_ids.add(message_id)
+            self._newest_inbox_ms = max(self._newest_inbox_ms, item.get("received_at_ms", 0))
+
+            subject = item.get("subject", "")
+            preview = item.get("preview", "")
+            payload = json.loads(preview) if preview else {}
+
+            if subject == "jump":
+                with self._lock:
+                    self._jump_pending = True
+                print(f"[CWB] >>> JUMP 受信 from {item.get('source_node')}")
+            elif subject == "move":
+                direction = payload.get("direction", "")
+                if direction not in ("left", "right"):
+                    return
                 with self._lock:
                     self._move_dir     = direction
                     self._move_expires = time.monotonic() + MOVE_HOLD_SEC
-                print(f"[CWB] >>> MOVE 受信 (HTTP): {direction}")
+                print(f"[CWB] >>> MOVE 受信 from {item.get('source_node')}: {direction}")
         except Exception:
             pass
 

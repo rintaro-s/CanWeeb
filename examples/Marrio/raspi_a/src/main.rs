@@ -155,7 +155,7 @@ async fn send_jump(client: &Client, api: &str, distance_cm: f64) -> Result<()> {
     let url = format!("{}/api/messages", api);
     let body = json!({
         "target": format!("node:{}", PC_NODE),
-        "traffic_class": "telemetry",
+        "traffic_class": "control",
         "topic": "marrio/input/jump",
         "subject": "jump",
         "content_type": "application/json",
