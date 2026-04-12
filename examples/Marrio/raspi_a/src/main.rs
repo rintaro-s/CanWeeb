@@ -23,6 +23,7 @@ const DEFAULT_BAUD: u32 = 9600;
 const DEFAULT_JUMP_THRESHOLD_CM: f64 = 30.0;
 const JUMP_COOLDOWN_MS: u64 = 800;
 const PC_NODE: &str = "marrio-pc";
+const LOG_EVERY_N: u64 = 10;   // N回に1回距離をログ出力
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -71,13 +72,14 @@ async fn run_sensor_loop(
         .open()
         .with_context(|| format!("シリアルポート {} を開けませんでした", port_name))?;
 
-    info!("シリアルポート接続完了: {}", port_name);
+    info!("シリアルポート接続完了: {} @ {} baud", port_name, baud);
+    info!("ジャンプ閾値: {:.1} cm", jump_threshold);
 
     let mut reader = BufReader::new(port);
-    let mut line = String::new();
-    let mut last_jump_at = Instant::now()
-        .checked_sub(Duration::from_secs(10))
-        .unwrap_or_else(Instant::now);
+    let mut line   = String::new();
+    // Option<Instant> で初回から即座にジャンプ可能にする
+    let mut last_jump_at: Option<Instant> = None;
+    let mut measure_count: u64 = 0;
 
     loop {
         line.clear();
@@ -92,26 +94,52 @@ async fn run_sensor_loop(
                     continue;
                 }
 
+                // -1 はエラー値 (タイムアウト) → スキップ
+                if trimmed == "-1" {
+                    continue;
+                }
+
                 if let Ok(distance_cm) = trimmed.parse::<f64>() {
-                    let elapsed = last_jump_at.elapsed().as_millis() as u64;
+                    if distance_cm <= 0.0 {
+                        continue;
+                    }
 
-                    if distance_cm < jump_threshold && elapsed >= JUMP_COOLDOWN_MS {
-                        info!("障害物検知: {:.1} cm → ジャンプ送信", distance_cm);
-                        last_jump_at = Instant::now();
+                    measure_count += 1;
 
-                        let api_clone = api.to_string();
+                    // クールダウン確認
+                    let cooldown_ok = last_jump_at
+                        .map_or(true, |t| t.elapsed().as_millis() as u64 >= JUMP_COOLDOWN_MS);
+
+                    // N 回に 1 回は距離をログ出力（スパム防止）
+                    if measure_count % LOG_EVERY_N == 0 {
+                        info!(
+                            "[{:>6}回] 距離: {:>6.1} cm  (threshold: {} cm  jump_ready: {})",
+                            measure_count,
+                            distance_cm,
+                            jump_threshold,
+                            cooldown_ok,
+                        );
+                    }
+
+                    if distance_cm < jump_threshold && cooldown_ok {
+                        info!("★ JUMP! 距離 {:.1} cm < {} cm → 送信中...", distance_cm, jump_threshold);
+                        last_jump_at = Some(Instant::now());
+
+                        let api_clone    = api.to_string();
                         let client_clone = client.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = send_jump(&client_clone, &api_clone, distance_cm).await {
-                                error!("jump 送信失敗: {:#}", e);
+                            match send_jump(&client_clone, &api_clone, distance_cm).await {
+                                Ok(())  => info!("  ✓ JUMP 送信完了"),
+                                Err(e)  => error!("  ✗ JUMP 送信失敗: {:#}", e),
                             }
                         });
                     }
                 } else {
-                    warn!("パース失敗: '{}'", trimmed);
+                    warn!("距離パース失敗 (raw='{}')", trimmed);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                // タイムアウトは正常 (センサ測定間隔より長い場合)
                 continue;
             }
             Err(e) => {

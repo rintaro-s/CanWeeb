@@ -60,10 +60,11 @@ async fn run_encoder_loop(
         .open()
         .with_context(|| format!("シリアルポート {} を開けませんでした", port_name))?;
 
-    info!("シリアルポート接続完了: {}", port_name);
+    info!("シリアルポート接続完了: {} @ {} baud", port_name, baud);
 
     let mut reader = BufReader::new(port);
-    let mut line = String::new();
+    let mut line   = String::new();
+    let mut recv_count: u64 = 0;
 
     loop {
         line.clear();
@@ -78,20 +79,26 @@ async fn run_encoder_loop(
                     continue;
                 }
 
+                recv_count += 1;
+                // 全受信行をログ出力（STM32 生データ確認用）
+                info!("[{:>5}] シリアル受信: {:?}", recv_count, trimmed);
+
                 // STM32 から送られてくるフォーマット: "L" または "R" または "S:<count>"
-                // L = 左移動, R = 右移動, S:<count> = 絶対カウント値
-                let direction = parse_encoder_line(trimmed);
-                if let Some((dir, count)) = direction {
-                    info!("エンコーダ: {} (count={})", dir, count);
-                    let api_clone = api.to_string();
-                    let client_clone = client.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = send_move(&client_clone, &api_clone, &dir, count).await {
-                            error!("move 送信失敗: {:#}", e);
-                        }
-                    });
-                } else {
-                    warn!("パース失敗: '{}'", trimmed);
+                match parse_encoder_line(trimmed) {
+                    Some((dir, count)) => {
+                        info!("  → エンコーダ解析: 方向={} count={} → 送信中...", dir, count);
+                        let api_clone    = api.to_string();
+                        let client_clone = client.clone();
+                        tokio::spawn(async move {
+                            match send_move(&client_clone, &api_clone, &dir, count).await {
+                                Ok(())  => info!("  ✓ MOVE 送信完了: {}", dir),
+                                Err(e)  => error!("  ✗ MOVE 送信失敗: {:#}", e),
+                            }
+                        });
+                    }
+                    None => {
+                        warn!("  → エンコーダ解析失敗: {:?}", trimmed);
+                    }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {

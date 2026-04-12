@@ -27,8 +27,16 @@ import base64
 import requests
 import pygame
 import cv2
-import mediapipe as mp
 import numpy as np
+
+# websocket-client ライブラリ
+try:
+    import websocket
+    _HAS_WEBSOCKET = True
+except ImportError:
+    _HAS_WEBSOCKET = False
+
+# pygame.mixer は使用しない（依存関係削減）
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from enum import Enum, auto
@@ -38,7 +46,8 @@ from enum import Enum, auto
 # ---------------------------------------------------------------------------
 CANWEEB_API   = os.environ.get("CANWEEB_API", "http://localhost:8080")
 CAMERA_INDEX  = int(os.environ.get("CAMERA_INDEX", "0"))
-POLL_INTERVAL = 0.08          # CWB ポーリング間隔 (秒)
+POLL_INTERVAL = 0.05          # CWB ポーリングフォールバック間隔 (秒)
+MOVE_HOLD_SEC = 0.50          # 移動イベントを何秒間有効とみなすか
 SCREEN_W, SCREEN_H = 1280, 720
 FPS           = 60
 GRAVITY       = 0.55
@@ -46,7 +55,7 @@ JUMP_VY       = -13.0
 PLAYER_SPEED  = 5.0
 TILE_W, TILE_H = 48, 48
 FACE_PREVIEW_W, FACE_PREVIEW_H = 240, 180   # 右下に表示するカメラ縮小サイズ
-MOUTH_OPEN_THRESHOLD = 0.06   # 口開閉の比率閾値
+MOUTH_OPEN_THRESHOLD = 0.35   # 口開閉の面積比率閾値
 
 # ---------------------------------------------------------------------------
 # 色
@@ -76,19 +85,38 @@ STOMP_VY      = -9.0
 PLAYER_LIVES  = 3
 
 # ---------------------------------------------------------------------------
-# CanWeeb クライアント (非同期ポーリング)
+# CanWeeb クライアント (WebSocket優先 / HTTPポーリングフォールバック)
 # ---------------------------------------------------------------------------
 class CanWeebClient:
+    """
+    WS モード (websocket-client インストール済み):
+      /ws/topics を購読 → WS メッセージの "preview" フィールドに
+      payload_preview() の結果(最大160文字)が入る。
+      raspi の JSON ペイロードは ~65文字なので preview = 完全ペイロード。
+      → HTTP 追加取得不要、WSスレッドをブロックしない。
+
+    フォールバック (websocket-client なし):
+      /api/topic を POLL_INTERVAL 秒おきにポーリング。
+    """
+
     def __init__(self, api_base: str):
         self.api_base = api_base.rstrip("/")
-        self._session = requests.Session()
-        self._lock    = threading.Lock()
-        self._jump_pending  = False
-        self._move_dir: Optional[str] = None  # "left" | "right" | None
+        self._lock           = threading.Lock()
+        self._jump_pending   = False
+        self._move_dir: Optional[str] = None
+        self._move_expires: float     = 0.0
         self._seen_topics: dict[str, float] = {}
         self._running = True
-        self._thread  = threading.Thread(target=self._poll_loop, daemon=True)
-        self._thread.start()
+
+        if _HAS_WEBSOCKET:
+            t = threading.Thread(target=self._ws_loop, daemon=True)
+            print("[CWB] WebSocket モードで起動")
+        else:
+            t = threading.Thread(target=self._poll_loop, daemon=True)
+            print("[CWB] HTTP ポーリングモードで起動 (pip install websocket-client 推奨)")
+        t.start()
+
+    # ---- 公開 API ----
 
     def consume_jump(self) -> bool:
         with self._lock:
@@ -96,90 +124,156 @@ class CanWeebClient:
             self._jump_pending = False
             return v
 
-    def consume_move(self) -> Optional[str]:
+    def get_move(self) -> Optional[str]:
+        """有効期限内の移動方向を返す。期限切れ/未受信は None。"""
         with self._lock:
-            v = self._move_dir
+            if self._move_dir and time.monotonic() < self._move_expires:
+                return self._move_dir
             self._move_dir = None
-            return v
+            return None
 
     def stop(self):
         self._running = False
 
+    # ---- WebSocket ループ ----
+
+    def _ws_loop(self):
+        ws_url = (self.api_base
+                  .replace("https://", "wss://")
+                  .replace("http://",  "ws://")) + "/ws/topics"
+        while self._running:
+            try:
+                ws = websocket.WebSocket()
+                ws.settimeout(15)          # recv タイムアウト (keepalive 用)
+                ws.connect(ws_url)
+                print(f"[CWB] WS 接続: {ws_url}")
+                while self._running:
+                    try:
+                        raw = ws.recv()
+                        if raw:
+                            self._handle_ws_msg(raw)
+                    except websocket.WebSocketTimeoutException:
+                        continue   # タイムアウトは正常 → 再受信
+                    except Exception as e:
+                        print(f"[CWB] WS 切断: {e}")
+                        break
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"[CWB] WS 接続失敗: {e}")
+            if self._running:
+                time.sleep(3.0)
+
+    def _handle_ws_msg(self, raw: str):
+        """
+        WS メッセージ例:
+          {"topic":"marrio/input/move","preview":"{\"direction\":\"right\",...}","..."}
+        preview に完全ペイロードが入っているので HTTP 追加取得不要。
+        """
+        try:
+            msg   = json.loads(raw)
+            topic = msg.get("topic", "")
+
+            if topic == "marrio/input/jump":
+                with self._lock:
+                    self._jump_pending = True
+                print("[CWB] >>> JUMP 受信")
+
+            elif topic == "marrio/input/move":
+                preview = msg.get("preview", "")
+                direction = None
+                try:
+                    direction = json.loads(preview).get("direction")
+                except Exception:
+                    pass
+                if direction in ("left", "right"):
+                    with self._lock:
+                        self._move_dir     = direction
+                        self._move_expires = time.monotonic() + MOVE_HOLD_SEC
+                    print(f"[CWB] >>> MOVE 受信: {direction}")
+                else:
+                    print(f"[CWB] MOVE preview パース失敗: {preview!r}")
+
+        except Exception as e:
+            print(f"[CWB] WS メッセージ処理エラー: {e}")
+
+    # ---- HTTP ポーリングフォールバック ----
+
     def _poll_loop(self):
         while self._running:
             try:
-                self._poll_topic("marrio/input/jump",  self._on_jump)
-                self._poll_topic("marrio/input/move",  self._on_move)
-            except Exception as e:
+                self._poll_one("marrio/input/jump", self._on_jump_raw)
+                self._poll_one("marrio/input/move",  self._on_move_raw)
+            except Exception:
                 pass
             time.sleep(POLL_INTERVAL)
 
-    def _poll_topic(self, topic: str, handler):
+    def _poll_one(self, topic: str, handler):
         try:
-            resp = self._session.get(
+            resp = requests.get(          # Session を使わず都度生成 (スレッドセーフ)
                 f"{self.api_base}/api/topic",
                 params={"name": topic},
-                timeout=1.0,
+                timeout=1.5,
             )
-            if resp.status_code == 404:
+            if resp.status_code != 200:
                 return
-            resp.raise_for_status()
-            data = resp.json()
+            data    = resp.json()
             recv_ms = data.get("received_at_ms", 0)
-            prev_ms = self._seen_topics.get(topic, 0)
-            if recv_ms > prev_ms:
+            if recv_ms > self._seen_topics.get(topic, 0):
                 self._seen_topics[topic] = recv_ms
-                payload_b64 = data.get("payload_base64", "")
-                if payload_b64:
-                    raw = base64.b64decode(payload_b64).decode("utf-8", errors="replace")
-                    handler(raw)
+                b64 = data.get("payload_base64", "")
+                if b64:
+                    handler(base64.b64decode(b64).decode("utf-8", errors="replace"))
         except Exception:
             pass
 
-    def _on_jump(self, raw: str):
+    def _on_jump_raw(self, raw: str):
         with self._lock:
             self._jump_pending = True
+        print("[CWB] >>> JUMP 受信 (HTTP)")
 
-    def _on_move(self, raw: str):
+    def _on_move_raw(self, raw: str):
         try:
-            obj = json.loads(raw)
-            direction = obj.get("direction", "")
+            direction = json.loads(raw).get("direction", "")
             if direction in ("left", "right"):
                 with self._lock:
-                    self._move_dir = direction
+                    self._move_dir     = direction
+                    self._move_expires = time.monotonic() + MOVE_HOLD_SEC
+                print(f"[CWB] >>> MOVE 受信 (HTTP): {direction}")
         except Exception:
             pass
 
 
 # ---------------------------------------------------------------------------
-# 顔追跡 (MediaPipe FaceMesh)
+# 顔追跡 (OpenCV HaarCascade - mediapipe不要)
 # ---------------------------------------------------------------------------
 class FaceTracker:
-    UPPER_LIP = 13
-    LOWER_LIP = 14
-    NOSE_TIP  = 1
-    LEFT_EYE  = 33
-    RIGHT_EYE = 263
-
     def __init__(self, camera_index: int = 0):
         self.cap = cv2.VideoCapture(camera_index)
+        if not self.cap.isOpened():
+            raise RuntimeError(f"カメラ {camera_index} を開けません")
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        mp_face = mp.solutions.face_mesh
-        self.mesh = mp_face.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+
+        # HaarCascade ロード (OpenCV 同梱)
+        cascade_dir = cv2.data.haarcascades
+        self._face_cascade  = cv2.CascadeClassifier(
+            cascade_dir + "haarcascade_frontalface_default.xml")
+        self._mouth_cascade = cv2.CascadeClassifier(
+            cascade_dir + "haarcascade_smile.xml")
+
         self._lock       = threading.Lock()
-        self._face_x     = 0.5   # 0.0〜1.0 (左→右)
-        self._face_y     = 0.5   # 0.0〜1.0 (上→下)
+        self._face_x     = 0.5
+        self._face_y     = 0.5
         self._mouth_open = False
         self._frame_rgb: Optional[np.ndarray] = None
         self._running = True
         self._thread  = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
+        print("[FaceTracker] OpenCV HaarCascade で起動")
 
     def get_state(self) -> Tuple[float, float, bool, Optional[np.ndarray]]:
         with self._lock:
@@ -196,33 +290,33 @@ class FaceTracker:
                 time.sleep(0.05)
                 continue
 
-            frame = cv2.flip(frame, 1)  # 左右反転 (鏡像)
-            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = self.mesh.process(rgb)
+            frame = cv2.flip(frame, 1)  # 左右反転（鏡像）
+            h, w  = frame.shape[:2]
+            gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray  = cv2.equalizeHist(gray)
 
             face_x, face_y = 0.5, 0.5
             mouth_open = False
 
-            if result.multi_face_landmarks:
-                lm = result.multi_face_landmarks[0].landmark
-                nose     = lm[self.NOSE_TIP]
-                upper    = lm[self.UPPER_LIP]
-                lower    = lm[self.LOWER_LIP]
-                left_eye = lm[self.LEFT_EYE]
-                right_eye= lm[self.RIGHT_EYE]
+            faces = self._face_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=4, minSize=(80, 80))
 
-                face_x = nose.x          # 0〜1
-                face_y = nose.y          # 0〜1
+            if len(faces) > 0:
+                # 最大の顔を使用
+                fx, fy, fw, fh = max(faces, key=lambda r: r[2] * r[3])
+                face_x = (fx + fw / 2) / w
+                face_y = (fy + fh / 2) / h
 
-                # 口の開き具合 (目間距離で正規化)
-                eye_dist    = math.hypot(right_eye.x - left_eye.x,
-                                         right_eye.y - left_eye.y)
-                mouth_gap   = abs(lower.y - upper.y)
-                if eye_dist > 1e-4:
-                    ratio = mouth_gap / eye_dist
-                    mouth_open = ratio > MOUTH_OPEN_THRESHOLD
+                # 顔領域の下半分で口を検出
+                roi_y  = fy + fh // 2
+                roi_h  = fh // 2
+                roi    = gray[roi_y:roi_y + roi_h, fx:fx + fw]
+                smiles = self._mouth_cascade.detectMultiScale(
+                    roi, scaleFactor=1.7, minNeighbors=22, minSize=(25, 15))
+                mouth_open = len(smiles) > 0
 
-            # プレビュー用縮小フレーム (RGB, small)
+            # プレビュー用縮小フレーム (RGB)
+            rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             small = cv2.resize(rgb, (FACE_PREVIEW_W, FACE_PREVIEW_H))
 
             with self._lock:
@@ -264,6 +358,8 @@ class Enemy:
     alive: bool = True
     stomped: bool = False
     stomp_timer: float = 0.0
+    W: int = field(default=TILE_W - 6, init=False)
+    H: int = field(default=TILE_H - 4, init=False)
 
 @dataclass
 class Particle:
@@ -356,9 +452,6 @@ class Player:
     on_ground: bool = False
     alive: bool = True
     dead_timer: float = 0.0
-    face_x: float = 0.5   # 顔の横位置 0-1
-    face_y: float = 0.5   # 顔の縦位置 0-1
-    mouth_open: bool = False
     score: int = 0
     lives: int = PLAYER_LIVES
     coins_collected: int = 0
@@ -368,6 +461,16 @@ class Player:
 
     def rect(self):
         return pygame.Rect(int(self.x), int(self.y), self.W, self.H)
+
+@dataclass
+class FaceEntity:
+    """顔追跡による独立エンティティ（アイテム取得専用）"""
+    screen_x: float = SCREEN_W / 2
+    screen_y: float = SCREEN_H / 2
+    face_x: float = 0.5   # カメラ座標 0-1
+    face_y: float = 0.5
+    mouth_open: bool = False
+    size: int = 32  # 表示サイズ
 
 
 # ---------------------------------------------------------------------------
@@ -387,15 +490,19 @@ class GameState(Enum):
 class MarrioGame:
     def __init__(self):
         pygame.init()
-        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         pygame.display.set_caption("Marrio - Face Control Edition")
         self.clock  = pygame.time.Clock()
 
-        # フォント
-        self.font_big   = pygame.font.SysFont("monospace", 48, bold=True)
-        self.font_mid   = pygame.font.SysFont("monospace", 28, bold=True)
-        self.font_small = pygame.font.SysFont("monospace", 20)
+        # フォント（pygame.font使用不可のため None）
+        try:
+            self.font_big   = pygame.font.SysFont("monospace", 48, bold=True)
+            self.font_mid   = pygame.font.SysFont("monospace", 28, bold=True)
+            self.font_small = pygame.font.SysFont("monospace", 20)
+        except:
+            self.font_big   = None
+            self.font_mid   = None
+            self.font_small = None
 
         # CanWeeb クライアント
         self.cwb = CanWeebClient(CANWEEB_API)
@@ -407,9 +514,6 @@ class MarrioGame:
         except Exception as e:
             print(f"[FaceTracker] カメラ初期化失敗: {e} → マウス操作に切り替え")
             self.face_tracker = None
-
-        # サウンド生成 (pygame.sndarray)
-        self._sounds = self._create_sounds()
 
         self.state       = GameState.TITLE
         self.high_score  = 0
@@ -426,40 +530,11 @@ class MarrioGame:
         self.coins: List[Coin]       = []
         self.particles: List[Particle] = []
         self.player   = Player()
+        self.face     = FaceEntity()  # 顔エンティティ（独立）
         self.camera_x = 0.0
         self.goal_reached = False
         self.goal_timer   = 0.0
 
-    # ------------------------------------------------------------------
-    # プロシージャルサウンド
-    # ------------------------------------------------------------------
-    def _create_sounds(self) -> dict:
-        sounds = {}
-        sr = 44100
-        def make_tone(freq: float, duration: float, vol: float = 0.3, kind="square") -> pygame.mixer.Sound:
-            n = int(sr * duration)
-            t = np.linspace(0, duration, n, endpoint=False)
-            if kind == "square":
-                wave = vol * np.sign(np.sin(2 * np.pi * freq * t))
-            elif kind == "noise":
-                wave = vol * (2 * np.random.rand(n) - 1)
-            else:
-                wave = vol * np.sin(2 * np.pi * freq * t)
-            wave = (wave * 32767).astype(np.int16)
-            stereo = np.column_stack([wave, wave])
-            return pygame.sndarray.make_sound(stereo)
-
-        sounds["jump"]  = make_tone(520, 0.12, 0.25, "square")
-        sounds["coin"]  = make_tone(880, 0.15, 0.2,  "sine")
-        sounds["stomp"] = make_tone(200, 0.1,  0.3,  "noise")
-        sounds["die"]   = make_tone(180, 0.4,  0.25, "square")
-        sounds["clear"] = make_tone(660, 0.3,  0.2,  "sine")
-        return sounds
-
-    def _play(self, name: str):
-        s = self._sounds.get(name)
-        if s:
-            s.play()
 
     # ------------------------------------------------------------------
     # タイル衝突ユーティリティ
@@ -473,10 +548,11 @@ class MarrioGame:
         t = self._tile_at(tx, ty)
         return t in (TileType.GROUND, TileType.BRICK, TileType.PIPE, TileType.FLAG, TileType.COIN)
 
-    def _resolve_collision(self, entity, vx: float, vy: float) -> Tuple[float, float, bool, bool]:
+    def _resolve_collision(self, entity, vx: float, vy: float,
+                            is_player: bool = False) -> Tuple[float, float, bool, bool]:
         """AABB タイル衝突解決。返り値: (new_vx, new_vy, on_ground, hit_ceiling)"""
-        W = entity.W
-        H = entity.H
+        EW = entity.W
+        EH = entity.H
         ex, ey = entity.x, entity.y
         on_ground   = False
         hit_ceiling = False
@@ -484,10 +560,10 @@ class MarrioGame:
         # 横移動
         ex += vx
         left_tile  = int(ex // TILE_W)
-        right_tile = int((ex + W - 1) // TILE_W)
-        for ty in range(int(ey // TILE_H), int((ey + H - 1) // TILE_H) + 1):
+        right_tile = int((ex + EW - 1) // TILE_W)
+        for ty in range(int(ey // TILE_H), int((ey + EH - 1) // TILE_H) + 1):
             if vx > 0 and self._is_solid(right_tile, ty):
-                ex = right_tile * TILE_W - W
+                ex = right_tile * TILE_W - EW
                 vx = 0
                 break
             if vx < 0 and self._is_solid(left_tile, ty):
@@ -498,14 +574,14 @@ class MarrioGame:
         # 縦移動
         ey += vy
         top_tile    = int(ey // TILE_H)
-        bottom_tile = int((ey + H - 1) // TILE_H)
+        bottom_tile = int((ey + EH - 1) // TILE_H)
         left_tile   = int(ex // TILE_W)
-        right_tile  = int((ex + W - 1) // TILE_W)
+        right_tile  = int((ex + EW - 1) // TILE_W)
 
         if vy > 0:  # 落下
             for tx in range(left_tile, right_tile + 1):
                 if self._is_solid(tx, bottom_tile):
-                    ey = bottom_tile * TILE_H - H
+                    ey = bottom_tile * TILE_H - EH
                     vy = 0
                     on_ground = True
                     break
@@ -515,7 +591,8 @@ class MarrioGame:
                     ey = (top_tile + 1) * TILE_H
                     vy = 0
                     hit_ceiling = True
-                    self._hit_block(tx, top_tile, entity)
+                    if is_player:  # ブロック破壊はプレイヤーのみ
+                        self._hit_block(tx, top_tile, entity)
                     break
 
         entity.x, entity.y = ex, ey
@@ -530,7 +607,6 @@ class MarrioGame:
             self.coins.append(Coin(x=tx * TILE_W + TILE_W / 2, y=ty * TILE_H))
             player.score += COIN_SCORE
             player.coins_collected += 1
-            self._play("coin")
             self._spawn_particles(tx * TILE_W + TILE_W / 2, ty * TILE_H, COIN_C, 8)
 
     # ------------------------------------------------------------------
@@ -590,63 +666,53 @@ class MarrioGame:
 
     def _draw_title(self):
         self.screen.fill(DARK_BLUE)
-        surf = self.font_big.render("MARRIO", True, YELLOW)
-        self.screen.blit(surf, (SCREEN_W // 2 - surf.get_width() // 2, 160))
-        surf2 = self.font_mid.render("Face Control Edition", True, WHITE)
-        self.screen.blit(surf2, (SCREEN_W // 2 - surf2.get_width() // 2, 240))
-
-        lines = [
-            "操作方法:",
-            "  顔を左右に動かす → 移動 (カメラ操作)",
-            "  口を開く → アイテム取得",
-            "  超音波センサに近づく → ジャンプ (RasPi-A)",
-            "  ロータリーエンコーダ → 左右移動 (RasPi-B)",
-            "",
-            "キーボード補助: ← → 移動  Space/↑ ジャンプ",
-            "",
-            "   SPACE / ENTER で開始",
-        ]
-        for i, line in enumerate(lines):
-            s = self.font_small.render(line, True, (200, 200, 200))
-            self.screen.blit(s, (SCREEN_W // 2 - s.get_width() // 2, 310 + i * 28))
+        # タイトル（図形で簡易表示）
+        pygame.draw.rect(self.screen, YELLOW, (SCREEN_W // 2 - 150, 160, 300, 60))
+        pygame.draw.rect(self.screen, DARK_BLUE, (SCREEN_W // 2 - 145, 165, 290, 50))
+        
+        # 簡易テキスト表示（ドット）
+        self._draw_simple_text("MARRIO", SCREEN_W // 2 - 100, 180, YELLOW, 4)
+        self._draw_simple_text("SPACE TO START", SCREEN_W // 2 - 140, 400, WHITE, 2)
 
     # ------------------------------------------------------------------
     # ゲームアップデート
     # ------------------------------------------------------------------
     def _update_game(self, dt: float):
         player = self.player
+        face   = self.face
 
         # ---- 入力収集 ----
         jump_cwb  = self.cwb.consume_jump()
-        move_cwb  = self.cwb.consume_move()
+        move_cwb  = self.cwb.get_move()   # 期限付き移動方向（None or "left"/"right"）
 
         keys = pygame.key.get_pressed()
 
-        # 顔追跡
+        # ---- 顔追跡（独立エンティティ） ----
         if self.face_tracker:
             fx, fy, mouth_open, _ = self.face_tracker.get_state()
-            player.face_x     = fx
-            player.face_y     = fy
-            player.mouth_open = mouth_open
+            face.face_x     = fx
+            face.face_y     = fy
+            face.mouth_open = mouth_open
         else:
+            # フォールバック: マウス
             mx, my = pygame.mouse.get_pos()
-            player.face_x     = mx / SCREEN_W
-            player.face_y     = my / SCREEN_H
-            player.mouth_open = pygame.mouse.get_pressed()[0]
+            face.face_x     = mx / SCREEN_W
+            face.face_y     = my / SCREEN_H
+            face.mouth_open = pygame.mouse.get_pressed()[0]
+
+        # 顔のスクリーン座標を更新（カメラ追従なし、画面固定）
+        face.screen_x = face.face_x * SCREEN_W
+        face.screen_y = face.face_y * SCREEN_H
 
         if not player.alive:
             return
 
         # ---- 水平方向の移動決定 ----
-        # 優先度: 顔 > CWB (ロータリーエンコーダ) > キーボード
+        # 優先度: CWB (ロータリーエンコーダ) > キーボード
+        # ※顔は移動に影響しない
         target_vx = 0.0
 
-        # 顔の横位置で移動 (0.5 を中心にデッドゾーン ±0.1)
-        face_dx = player.face_x - 0.5
-        if abs(face_dx) > 0.08:
-            target_vx = face_dx * PLAYER_SPEED * 2.5
-
-        # CWB 移動イベントで加速/補正
+        # CWB 移動イベント（ロータリーエンコーダ）
         if move_cwb == "left":
             target_vx = -PLAYER_SPEED
         elif move_cwb == "right":
@@ -663,16 +729,15 @@ class MarrioGame:
         if abs(player.vx) < 0.1:
             player.vx = 0.0
 
-        # ---- ジャンプ ----
+        # ---- ジャンプ（超音波センサ or キーボード） ----
         want_jump = (
-            jump_cwb
+            jump_cwb  # 超音波センサ（RasPi-A）
             or keys[pygame.K_SPACE]
             or keys[pygame.K_UP]
         )
         if want_jump and player.on_ground:
             player.vy = JUMP_VY
             player.on_ground = False
-            self._play("jump")
             self._spawn_particles(player.x + player.W / 2, player.y + player.H, WHITE, 6)
 
         # ---- 重力 ----
@@ -680,7 +745,7 @@ class MarrioGame:
         player.vy  = min(player.vy, 18.0)
 
         # ---- 衝突解決 ----
-        vx, vy, on_ground, _ = self._resolve_collision(player, player.vx, player.vy)
+        vx, vy, on_ground, _ = self._resolve_collision(player, player.vx, player.vy, is_player=True)
         player.vx       = vx
         player.vy       = vy
         player.on_ground = on_ground
@@ -707,13 +772,13 @@ class MarrioGame:
             enemy.vy += GRAVITY
             old_ex, old_ey = enemy.x, enemy.y
             # 壁反転
-            enemy.vx, enemy.vy, _, _ = self._resolve_collision(enemy, enemy.vx, enemy.vy)
+            enemy.vx, enemy.vy, _, _ = self._resolve_collision(enemy, enemy.vx, enemy.vy, is_player=False)
             if enemy.x == old_ex and enemy.vx == 0:
-                enemy.vx *= -1
+                enemy.vx = -enemy.vx if enemy.vx != 0 else 1.5
 
             # プレイヤーとの衝突
             if player.invincible <= 0:
-                erect = pygame.Rect(int(enemy.x), int(enemy.y), enemy.W if hasattr(enemy, 'W') else TILE_W - 6, TILE_H - 4)
+                erect = pygame.Rect(int(enemy.x), int(enemy.y), enemy.W, enemy.H)
                 if player.rect().colliderect(erect):
                     # 踏みつけ判定: プレイヤーが上から来た
                     if player.vy > 0 and player.y + player.H - 8 <= enemy.y + 4:
@@ -721,7 +786,6 @@ class MarrioGame:
                         enemy.stomp_timer = 0.4
                         player.vy        = STOMP_VY
                         player.score    += ENEMY_SCORE
-                        self._play("stomp")
                         self._spawn_particles(enemy.x + TILE_W / 2, enemy.y, RED, 10)
                     else:
                         self._player_die()
@@ -736,19 +800,20 @@ class MarrioGame:
             if coin.vy > 0 and coin.y > (self.level_h - 3) * TILE_H:
                 coin.alive = False
 
-        # ---- 口パクでコイン取得 ----
-        if player.mouth_open:
-            px_center = player.x + player.W / 2
-            py_center = player.y + player.H / 2
+        # ---- 口パクでコイン取得（顔エンティティ） ----
+        if face.mouth_open:
+            # 顔のワールド座標を計算（カメラオフセット込み）
+            face_world_x = face.screen_x + self.camera_x
+            face_world_y = face.screen_y
+            
             for coin in self.coins:
                 if not coin.alive:
                     continue
-                dist = math.hypot(coin.x - px_center, coin.y - py_center)
-                if dist < TILE_W * 2:
+                dist = math.hypot(coin.x - face_world_x, coin.y - face_world_y)
+                if dist < TILE_W * 2.5:  # 顔の取得範囲
                     coin.alive = False
                     player.score += COIN_SCORE
                     player.coins_collected += 1
-                    self._play("coin")
                     self._spawn_particles(coin.x, coin.y, COIN_C, 6)
 
         # ---- マップ上コイン (タイルを直接触る) での取得 ----
@@ -767,7 +832,6 @@ class MarrioGame:
                         tile.ttype = TileType.BRICK
                         player.score += COIN_SCORE
                         player.coins_collected += 1
-                        self._play("coin")
                         self._spawn_particles(tx * TILE_W + TILE_W / 2, ty * TILE_H, COIN_C, 6)
 
         # ---- ゴールフラグ ----
@@ -776,7 +840,6 @@ class MarrioGame:
                 if self._tile_at(tx, ty) == TileType.FLAG:
                     if not self.goal_reached:
                         self.goal_reached = True
-                        self._play("clear")
                         self._spawn_particles(player.x, player.y, YELLOW, 30)
                     self.state = GameState.CLEARED
                     return
@@ -799,7 +862,6 @@ class MarrioGame:
         player.alive    = False
         player.dead_timer = 2.0
         player.vy       = JUMP_VY * 1.2
-        self._play("die")
         self._spawn_particles(player.x + player.W / 2, player.y, RED, 20)
         self.state = GameState.DEAD
 
@@ -830,8 +892,7 @@ class MarrioGame:
                 elif tile.ttype == TileType.COIN and not tile.collected:
                     pygame.draw.rect(self.screen, (200, 150, 20), (sx, sy, TILE_W, TILE_H))
                     pygame.draw.circle(self.screen, COIN_C, (sx + TILE_W // 2, sy + TILE_H // 2), TILE_W // 3)
-                    c = self.font_small.render("?", True, BLACK)
-                    self.screen.blit(c, (sx + TILE_W // 2 - c.get_width() // 2, sy + TILE_H // 2 - c.get_height() // 2))
+                    self._draw_simple_text("?", sx + TILE_W // 2 - 5, sy + TILE_H // 2 - 5, BLACK, 2)
                 elif tile.ttype == TileType.PIPE:
                     pygame.draw.rect(self.screen, (30, 160, 40), (sx, sy, TILE_W, TILE_H))
                     pygame.draw.rect(self.screen, (20, 120, 30), (sx, sy, TILE_W, TILE_H), 2)
@@ -873,7 +934,7 @@ class MarrioGame:
             sx = int(p.x) - cam_x
             pygame.draw.circle(self.screen, p.color, (sx, int(p.y)), p.size)
 
-        # プレイヤー描画
+        # プレイヤー描画（マリオ本体）
         player = self.player
         sx = int(player.x) - cam_x
         sy = int(player.y)
@@ -884,16 +945,18 @@ class MarrioGame:
             # 帽子
             pygame.draw.rect(self.screen, (150, 50, 10), (sx, sy - 8, player.W, 8))
             pygame.draw.rect(self.screen, (150, 50, 10), (sx - 3, sy - 4, player.W + 6, 4))
-            # 顔
+            # 顔（シンプルな固定表情）
             pygame.draw.circle(self.screen, (255, 200, 150), (sx + player.W // 2, sy + 6), 7)
-            if player.mouth_open:
-                pygame.draw.arc(self.screen, RED,
-                                (sx + player.W // 2 - 5, sy + 6, 10, 8),
-                                math.pi, 2 * math.pi, 2)
-            # 顔の位置に合わせて目の方向
-            eye_ox = int((player.face_x - 0.5) * 4)
-            pygame.draw.circle(self.screen, BLACK, (sx + player.W // 2 - 2 + eye_ox, sy + 4), 2)
-            pygame.draw.circle(self.screen, BLACK, (sx + player.W // 2 + 4 + eye_ox, sy + 4), 2)
+            # 目（固定）
+            pygame.draw.circle(self.screen, BLACK, (sx + player.W // 2 - 2, sy + 4), 2)
+            pygame.draw.circle(self.screen, BLACK, (sx + player.W // 2 + 4, sy + 4), 2)
+            # 口（固定）
+            pygame.draw.line(self.screen, BLACK, 
+                           (sx + player.W // 2 - 3, sy + 10),
+                           (sx + player.W // 2 + 3, sy + 10), 2)
+
+        # 顔エンティティ描画（独立、画面固定座標）
+        self._draw_face_entity()
 
         # HUD
         self._draw_hud()
@@ -901,27 +964,47 @@ class MarrioGame:
         # カメラプレビュー
         self._draw_face_preview()
 
+    def _draw_face_entity(self):
+        """顔エンティティを画面固定座標で描画"""
+        face = self.face
+        fx = int(face.screen_x)
+        fy = int(face.screen_y)
+        size = face.size
+        
+        # 半透明の顔円
+        face_surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+        pygame.draw.circle(face_surf, (255, 220, 180, 180), (size, size), size)
+        self.screen.blit(face_surf, (fx - size, fy - size))
+        
+        # 目
+        pygame.draw.circle(self.screen, BLACK, (fx - 8, fy - 4), 3)
+        pygame.draw.circle(self.screen, BLACK, (fx + 8, fy - 4), 3)
+        
+        # 口（開閉）
+        if face.mouth_open:
+            pygame.draw.ellipse(self.screen, RED, (fx - 10, fy + 4, 20, 14))
+            pygame.draw.ellipse(self.screen, (100, 0, 0), (fx - 10, fy + 4, 20, 14), 2)
+        else:
+            pygame.draw.arc(self.screen, BLACK, (fx - 8, fy + 2, 16, 10), 0, math.pi, 2)
+
     def _draw_hud(self):
         player = self.player
+        face   = self.face
         hud_surf = pygame.Surface((SCREEN_W, 40), pygame.SRCALPHA)
         hud_surf.fill((0, 0, 0, 140))
         self.screen.blit(hud_surf, (0, 0))
 
-        score_s = self.font_small.render(f"SCORE {player.score:07d}", True, WHITE)
-        coins_s = self.font_small.render(f"COINS {player.coins_collected:03d}", True, COIN_C)
-        lives_s = self.font_small.render(f"x{player.lives}", True, WHITE)
-        self.screen.blit(score_s, (10, 10))
-        self.screen.blit(coins_s, (250, 10))
+        # スコア表示（簡易）
+        self._draw_simple_text(f"SC:{player.score}", 10, 12, WHITE, 2)
+        self._draw_simple_text(f"CN:{player.coins_collected}", 200, 12, COIN_C, 2)
+        
         # ライフアイコン
         for i in range(player.lives):
-            pygame.draw.rect(self.screen, PLAYER_C, (430 + i * 22, 12, 14, 18))
-        self.screen.blit(lives_s, (430 + player.lives * 22 + 4, 10))
+            pygame.draw.rect(self.screen, PLAYER_C, (400 + i * 22, 12, 14, 18))
 
         # 口パク状態インジケータ
-        mouth_color = RED if player.mouth_open else (60, 60, 60)
+        mouth_color = RED if face.mouth_open else (60, 60, 60)
         pygame.draw.circle(self.screen, mouth_color, (SCREEN_W - 60, 20), 12)
-        label = self.font_small.render("MOUTH", True, WHITE)
-        self.screen.blit(label, (SCREEN_W - 110, 30))
 
     def _draw_face_preview(self):
         """カメラ映像を右下に縮小表示"""
@@ -937,8 +1020,7 @@ class MarrioGame:
         y0 = SCREEN_H - ph - 10
         pygame.draw.rect(self.screen, (40, 40, 40), (x0 - 2, y0 - 2, pw + 4, ph + 4))
         self.screen.blit(surf, (x0, y0))
-        label = self.font_small.render("CAM", True, WHITE)
-        self.screen.blit(label, (x0 + 4, y0 + 4))
+        self._draw_simple_text("CAM", x0 + 4, y0 + 4, WHITE, 1)
 
     # ------------------------------------------------------------------
     # 死亡 / クリア / ゲームオーバー
@@ -963,8 +1045,7 @@ class MarrioGame:
         ov = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 100))
         self.screen.blit(ov, (0, 0))
-        s = self.font_big.render("GAME OVER", True, RED)
-        self.screen.blit(s, (SCREEN_W // 2 - s.get_width() // 2, SCREEN_H // 2 - 40))
+        self._draw_simple_text("GAME OVER", SCREEN_W // 2 - 120, SCREEN_H // 2 - 40, RED, 4)
 
     def _update_cleared(self, dt: float):
         self.goal_timer += dt
@@ -976,19 +1057,14 @@ class MarrioGame:
         ov = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
         ov.fill((0, 0, 0, 80))
         self.screen.blit(ov, (0, 0))
-        s = self.font_big.render("COURSE CLEAR!", True, YELLOW)
-        self.screen.blit(s, (SCREEN_W // 2 - s.get_width() // 2, SCREEN_H // 2 - 60))
-        s2 = self.font_mid.render(f"SCORE: {self.player.score}", True, WHITE)
-        self.screen.blit(s2, (SCREEN_W // 2 - s2.get_width() // 2, SCREEN_H // 2 + 20))
+        self._draw_simple_text("CLEAR!", SCREEN_W // 2 - 80, SCREEN_H // 2 - 60, YELLOW, 4)
+        self._draw_simple_text(f"SCORE:{self.player.score}", SCREEN_W // 2 - 120, SCREEN_H // 2 + 20, WHITE, 2)
 
     def _draw_gameover(self):
         self.screen.fill(DARK_BLUE)
-        s = self.font_big.render("GAME OVER", True, RED)
-        self.screen.blit(s, (SCREEN_W // 2 - s.get_width() // 2, 200))
-        s2 = self.font_mid.render(f"HIGH SCORE: {self.high_score}", True, YELLOW)
-        self.screen.blit(s2, (SCREEN_W // 2 - s2.get_width() // 2, 300))
-        s3 = self.font_small.render("SPACE / ENTER でタイトルへ", True, WHITE)
-        self.screen.blit(s3, (SCREEN_W // 2 - s3.get_width() // 2, 400))
+        self._draw_simple_text("GAME OVER", SCREEN_W // 2 - 120, 200, RED, 4)
+        self._draw_simple_text(f"SCORE:{self.high_score}", SCREEN_W // 2 - 100, 300, YELLOW, 2)
+        self._draw_simple_text("SPACE TO RETRY", SCREEN_W // 2 - 120, 400, WHITE, 2)
 
     # ------------------------------------------------------------------
     # キーハンドラ
@@ -1008,6 +1084,52 @@ class MarrioGame:
     # ------------------------------------------------------------------
     # 終了
     # ------------------------------------------------------------------
+    def _draw_simple_text(self, text: str, x: int, y: int, color: Tuple[int, int, int], scale: int = 2):
+        """簡易テキスト描画（ドットマトリクス風）"""
+        # 5x7 ドットフォント（簡易版、数字とアルファベット一部のみ）
+        char_map = {
+            'A': [[0,1,1,1,0],[1,0,0,0,1],[1,1,1,1,1],[1,0,0,0,1],[1,0,0,0,1]],
+            'C': [[0,1,1,1,0],[1,0,0,0,1],[1,0,0,0,0],[1,0,0,0,1],[0,1,1,1,0]],
+            'E': [[1,1,1,1,1],[1,0,0,0,0],[1,1,1,1,0],[1,0,0,0,0],[1,1,1,1,1]],
+            'G': [[0,1,1,1,0],[1,0,0,0,0],[1,0,1,1,1],[1,0,0,0,1],[0,1,1,1,0]],
+            'I': [[1,1,1,1,1],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[1,1,1,1,1]],
+            'L': [[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[1,1,1,1,1]],
+            'M': [[1,0,0,0,1],[1,1,0,1,1],[1,0,1,0,1],[1,0,0,0,1],[1,0,0,0,1]],
+            'N': [[1,0,0,0,1],[1,1,0,0,1],[1,0,1,0,1],[1,0,0,1,1],[1,0,0,0,1]],
+            'O': [[0,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,1,1,0]],
+            'R': [[1,1,1,1,0],[1,0,0,0,1],[1,1,1,1,0],[1,0,1,0,0],[1,0,0,1,1]],
+            'S': [[0,1,1,1,1],[1,0,0,0,0],[0,1,1,1,0],[0,0,0,0,1],[1,1,1,1,0]],
+            'T': [[1,1,1,1,1],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0]],
+            'V': [[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0]],
+            'Y': [[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0]],
+            '0': [[0,1,1,1,0],[1,0,0,1,1],[1,0,1,0,1],[1,1,0,0,1],[0,1,1,1,0]],
+            '1': [[0,0,1,0,0],[0,1,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,1,1,1,0]],
+            '2': [[0,1,1,1,0],[1,0,0,0,1],[0,0,1,1,0],[0,1,0,0,0],[1,1,1,1,1]],
+            '3': [[1,1,1,1,0],[0,0,0,0,1],[0,1,1,1,0],[0,0,0,0,1],[1,1,1,1,0]],
+            '4': [[1,0,0,1,0],[1,0,0,1,0],[1,1,1,1,1],[0,0,0,1,0],[0,0,0,1,0]],
+            '5': [[1,1,1,1,1],[1,0,0,0,0],[1,1,1,1,0],[0,0,0,0,1],[1,1,1,1,0]],
+            '6': [[0,1,1,1,0],[1,0,0,0,0],[1,1,1,1,0],[1,0,0,0,1],[0,1,1,1,0]],
+            '7': [[1,1,1,1,1],[0,0,0,0,1],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0]],
+            '8': [[0,1,1,1,0],[1,0,0,0,1],[0,1,1,1,0],[1,0,0,0,1],[0,1,1,1,0]],
+            '9': [[0,1,1,1,0],[1,0,0,0,1],[0,1,1,1,1],[0,0,0,0,1],[0,1,1,1,0]],
+            ' ': [[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+            ':': [[0,0,0,0,0],[0,0,1,0,0],[0,0,0,0,0],[0,0,1,0,0],[0,0,0,0,0]],
+            '!': [[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,0,0,0],[0,0,1,0,0]],
+        }
+        
+        cx = x
+        for char in text.upper():
+            if char in char_map:
+                pattern = char_map[char]
+                for row_idx, row in enumerate(pattern):
+                    for col_idx, pixel in enumerate(row):
+                        if pixel:
+                            pygame.draw.rect(self.screen, color, 
+                                           (cx + col_idx * scale, y + row_idx * scale, scale, scale))
+                cx += 6 * scale
+            else:
+                cx += 6 * scale
+
     def _quit(self):
         self.cwb.stop()
         if self.face_tracker:

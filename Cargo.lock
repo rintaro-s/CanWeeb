@@ -242,6 +242,8 @@ dependencies = [
 name = "canweeb_cmdlib"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "crossterm",
  "gpio-cdev",
  "i2cdev",
  "libc",

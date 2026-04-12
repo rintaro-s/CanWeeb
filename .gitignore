@@ -2,3 +2,6 @@
 *.log
 
 CmdLib/target/debug/
+*/venv/
+*/node_modules/
+target/release/
