@@ -26,3 +26,7 @@ pub use crate::runtime::{set_backend, set_backend_arc, use_sim_backend};
 pub use crate::runtime::use_real_backend;
 pub use crate::types::{ControllerState, Level, PinMode, Pull, SafetyState};
 pub use crate::{encoder_read, encoder_reset};
+pub use crate::gpio_ext::{
+	DtOverlay, GpioUltrasonicSensor, GpioRotaryEncoder, EncDirection,
+	spin_sleep_us, gpio_sysfs_path, gpio_export, gpio_unexport,
+};

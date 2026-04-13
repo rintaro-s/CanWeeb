@@ -8,19 +8,17 @@ CanWeeb (メッシュネットワーク) と CmdLib (GPIO/シリアル制御) �
 ## システム構成
 
 ```
-[PC]  ──LAN──  [ラズパイA]  ──USB Serial──  [Arduino]
-                                               HC-SR04 (TRIG=12, ECHO=13)
-[PC]  ──LAN──  [ラズパイB]  ──UART──  [STM32]
-                                         RotaryEncoder (PB0=A相, PB7=B相)
+[PC]  ──LAN──  [ラズパイA]  ──GPIO──  HC-SR04 (TRIG=GPIO23, ECHO=GPIO24)
+[PC]  ──LAN──  [ラズパイB]  ──GPIO──  RotaryEncoder (A=GPIO17, B=GPIO18)
 ```
+
+**Arduino・STM32 は不要です。** Raspberry Pi の GPIO で直接センサを制御します。
 
 | ノード | node_id | 役割 |
 |--------|---------|------|
 | PC | `marrio-pc` | ゲーム描画・カメラ・CanWeeb 親 |
-| ラズパイ A | `marrio-raspi-a` | 超音波センサ橋渡し → jump イベント送信 |
-| ラズパイ B | `marrio-raspi-b` | エンコーダ橋渡し → move イベント送信 |
-| Arduino | — | HC-SR04 距離をシリアル出力 |
-| STM32 | — | ロータリーエンコーダを UART で L/R 出力 |
+| ラズパイ A | `marrio-raspi-a` | GPIO で HC-SR04 を直接読み取り → jump イベント送信 |
+| ラズパイ B | `marrio-raspi-b` | GPIO でロータリーエンコーダを直接監視 → move イベント送信 |
 
 ---
 
@@ -37,14 +35,14 @@ examples/Marrio/
 │   └── requirements.txt
 ├── raspi_a/
 │   ├── Cargo.toml
-│   └── src/main.rs       # シリアル読み取り → CWB jump 送信
+│   └── src/main.rs       # GPIO HC-SR04 直接読み取り → CWB jump 送信
 ├── raspi_b/
 │   ├── Cargo.toml
-│   └── src/main.rs       # シリアル読み取り → CWB move 送信
-├── arduino/
+│   └── src/main.rs       # GPIO ロータリーエンコーダ直接監視 → CWB move 送信
+├── arduino/              # (参考資料のみ、不要)
 │   └── marrio_ultrasonic/
 │       └── marrio_ultrasonic.ino
-└── stm32/
+└── stm32/                # (参考資料のみ、不要)
     └── marrio_encoder/
         ├── marrio_encoder.c
         └── marrio_encoder.h
@@ -70,96 +68,90 @@ examples/Marrio/
 
 **PC:**
 ```bash
-cargo run --release -- --config examples/Marrio/config/pc.toml
+cargo run --release --bin canweeb -- --config examples/Marrio/config/pc.toml
 ```
 
 **ラズパイ A:**
 ```bash
-cargo run --release -- --config examples/Marrio/config/raspi_a.toml
+cargo run --release --bin canweeb -- --config examples/Marrio/config/raspi_a.toml
 ```
 
 **ラズパイ B:**
 ```bash
-cargo run --release -- --config examples/Marrio/config/raspi_b.toml
+cargo run --release --bin canweeb -- --config examples/Marrio/config/raspi_b.toml
 ```
 
 > 同一 LAN 内であれば `discovery` により自動でピア接続されます。
 
 ---
 
-### 2. Arduino スケッチ書き込み
+### 2. ラズパイ A — GPIO 超音波センサ起動
 
-`arduino/marrio_ultrasonic/marrio_ultrasonic.ino` を Arduino IDE で書き込みます。
+```bash
+cd examples/Marrio/raspi_a
 
-**配線:**
+# デフォルト設定 (GPIO_TRIG=23, GPIO_ECHO=24, JUMP_THRESHOLD_CM=30)
+CANWEEB_API=http://localhost:8080 cargo run --release
 
-| HC-SR04 | Arduino |
-|---------|---------|
-| TRIG | ピン 12 |
-| ECHO | ピン 13 |
+# GPIO ピンを変更する場合
+CANWEEB_API=http://localhost:8080 \
+GPIO_TRIG=23 \
+GPIO_ECHO=24 \
+JUMP_THRESHOLD_CM=30 \
+SENSOR_SAMPLES=3 \
+MAX_DELTA_CM=50 \
+cargo run --release
+```
+
+**配線 (HC-SR04):**
+
+| HC-SR04 | Raspberry Pi |
+|---------|-------------|
+| TRIG | GPIO 23 (BCM) |
+| ECHO | GPIO 24 (BCM) |
 | VCC | 5V |
 | GND | GND |
 
----
+⚠️ **重要:** HC-SR04 の ECHO ピンは 5V 出力です。Raspberry Pi の GPIO は 3.3V 入力のため、**必ず抵抗分圧 (1kΩ + 2kΩ) またはレベルシフタを使用**してください。
 
-### 3. STM32 組み込み
-
-`stm32/marrio_encoder/` の 2 ファイルを STM32CubeIDE プロジェクトに追加します。
-
-**CubeMX 設定:**
-- PB0 → `GPIO_Input`, Pull-Up
-- PB7 → `GPIO_Input`, Pull-Up
-- USART1 → `Asynchronous`, 115200 baud, TX=PA9
-
-**main.c の while(1) に追加:**
-```c
-#include "marrio_encoder.h"
-
-// while(1) 内:
-Marrio_Encoder_Task();
+```
+HC-SR04 ECHO ──┬── 1kΩ ──┬── GPIO 24
+               │          │
+               └── 2kΩ ──┴── GND
 ```
 
-**配線:**
+---
 
-| ロータリーエンコーダ | STM32 |
-|---------------------|-------|
-| A 相 | PB0 (D3) |
-| B 相 | PB7 (D4) |
+### 3. ラズパイ B — GPIO ロータリーエンコーダ起動
+
+```bash
+cd examples/Marrio/raspi_b
+
+# デフォルト設定 (GPIO_ENC_A=17, GPIO_ENC_B=18)
+CANWEEB_API=http://localhost:8080 cargo run --release
+
+# GPIO ピンを変更する場合
+CANWEEB_API=http://localhost:8080 \
+GPIO_ENC_A=17 \
+GPIO_ENC_B=18 \
+DEBOUNCE_US=500 \
+MIN_PULSE_US=200 \
+COUNT_THRESHOLD=2 \
+cargo run --release
+```
+
+**配線 (ロータリーエンコーダ):**
+
+| エンコーダ | Raspberry Pi |
+|-----------|-------------|
+| A 相 | GPIO 17 (BCM) |
+| B 相 | GPIO 18 (BCM) |
 | GND | GND |
 | VCC | 3.3V |
 
 ---
 
-### 4. ラズパイ A ブリッジ起動
-
-```bash
-cd examples/Marrio/raspi_a
-# シリアルポートを自動検出する場合
-CANWEEB_API=http://localhost:8080 cargo run --release
-
-# ポートを明示する場合
-CANWEEB_API=http://localhost:8080 \
-SERIAL_PORT=/dev/ttyACM0 \
-BAUD_RATE=9600 \
-JUMP_THRESHOLD_CM=30 \
-cargo run --release
-```
-
----
-
-### 5. ラズパイ B ブリッジ起動
-
-```bash
-cd examples/Marrio/raspi_b
-CANWEEB_API=http://localhost:8080 \
-SERIAL_PORT=/dev/ttyACM0 \
-BAUD_RATE=115200 \
-cargo run --release
-```
-
----
-
-### 6. PC ゲーム起動
+### 4. PC ゲーム起動
 
 ```bash
 cd examples/Marrio/pc
@@ -174,14 +166,38 @@ CANWEEB_API=http://<PC_IP>:8080 python marrio_game.py
 | `CANWEEB_API` | `http://localhost:8080` | PC の CanWeeb API |
 | `CAMERA_INDEX` | `0` | カメラデバイス番号 |
 
+**raspi_a 環境変数:**
+
+| 変数 | デフォルト | 説明 |
+|------|-----------|------|
+| `CANWEEB_API` | `http://localhost:8080` | CanWeeb API URL |
+| `GPIO_TRIG` | `23` | HC-SR04 TRIG ピン (BCM) |
+| `GPIO_ECHO` | `24` | HC-SR04 ECHO ピン (BCM) |
+| `JUMP_THRESHOLD_CM` | `30` | ジャンプ判定距離 (cm) |
+| `SENSOR_SAMPLES` | `3` | 中央値フィルタサンプル数 |
+| `MAX_DELTA_CM` | `50` | 外れ値検出しきい値 (cm) |
+
+**raspi_b 環境変数:**
+
+| 変数 | デフォルト | 説明 |
+|------|-----------|------|
+| `CANWEEB_API` | `http://localhost:8080` | CanWeeb API URL |
+| `GPIO_ENC_A` | `17` | エンコーダ A 相ピン (BCM) |
+| `GPIO_ENC_B` | `18` | エンコーダ B 相ピン (BCM) |
+| `DEBOUNCE_US` | `500` | デバウンス時間 (µs) |
+| `MIN_PULSE_US` | `200` | 最小パルス幅 (µs) |
+| `COUNT_THRESHOLD` | `2` | 移動判定カウント閾値 |
+
 ---
 
 ## CanWeeb トピック仕様
 
 | Topic | 方向 | Traffic Class | Payload (JSON) |
 |-------|------|---------------|----------------|
-| `marrio/input/jump` | RasPi-A → PC | telemetry | `{"event":"jump","distance_cm":24.5,"source":"raspi-a"}` |
-| `marrio/input/move` | RasPi-B → PC | telemetry | `{"event":"move","direction":"left"\|"right","count":-1,"source":"raspi-b"}` |
+| `marrio/input/jump` | RasPi-A → PC | **control** | `{"event":"jump","distance_cm":24.5,"source":"raspi-a-gpio"}` |
+| `marrio/input/move` | RasPi-B → PC | **control** | `{"direction":"left"\|"right","delta":-2,"source":"raspi-b-gpio"}` |
+
+> **control** トピックは inbox に永続化され、WebSocket `/ws/inbox` で確実に配信されます。
 
 ---
 
@@ -208,17 +224,25 @@ CAMERA_INDEX=1 python marrio_game.py
 - 全ノードが同一 LAN にいるか確認
 - ファイアウォールでポート `7002` (TCP) と `7060` (UDP) を開放
 - `discovery.enabled = true` になっているか確認
+- CanWeeb ノード起動時に `--bin canweeb` を明示して起動しているか確認
 
-### シリアルポートが見つからない
+### GPIO が見つからない
 ```bash
-ls /dev/ttyACM* /dev/ttyUSB*
-# ラズパイ A (Arduino)
-SERIAL_PORT=/dev/ttyACM0 cargo run --release
-# ラズパイ B (STM32)
-SERIAL_PORT=/dev/ttyACM0 cargo run --release
+# GPIO チップの確認
+ls -la /dev/gpiochip*
+# ユーザーが gpio グループに属しているか確認
+groups $USER
+
+# gpio グループに追加 (要再ログイン)
+sudo usermod -aG gpio $USER
 ```
 
-### STM32 UART が無音
-- PA9 ピンが RasPi-B の `RX` に接続されているか確認 (クロス接続)
-- STM32 の GND と RasPi-B の GND が共通になっているか確認
-- ボーレートが `115200` で一致しているか確認
+### HC-SR04 が測定できない
+- TRIG・ECHO ピンの配線を確認
+- ECHO ピンに抵抗分圧またはレベルシフタが接続されているか確認
+- GPIO ピン番号が環境変数と一致しているか確認
+
+### ロータリーエンコーダが反応しない
+- A 相・B 相ピンの配線を確認
+- デバウンス時間を調整: `DEBOUNCE_US=1000` (大きくするとノイズに強くなる)
+- 最小パルス幅を調整: `MIN_PULSE_US=100` (小さくすると応答が速くなる)
