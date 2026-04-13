@@ -1,13 +1,12 @@
 /// Marrio - Raspberry Pi B (3ピンロータリーエンコーダ版)
 ///
-/// 3ピンロータリーエンコーダ (CLK, DT, SW) を GPIO で直接読み取り、
+/// 3ピンロータリーエンコーダ (CLK, DT, GND) を GPIO で直接読み取り、
 /// 移動イベントを CanWeeb 経由で送信する。
 ///
 /// 環境変数:
 ///   CANWEEB_API      - CanWeeb Web API URL (default: http://localhost:8080)
 ///   GPIO_CLK         - CLK (A相) ピンの BCM 番号 (default: 17)
 ///   GPIO_DT          - DT (B相) ピンの BCM 番号 (default: 18)
-///   GPIO_SW          - SW (スイッチ) ピンの BCM 番号 (default: 27, None で無効)
 ///   DEBOUNCE_US      - デバウンス時間 µs (default: 1000)
 ///   COUNT_THRESHOLD  - 移動判定カウント閾値 (default: 2)
 
@@ -22,7 +21,6 @@ use tracing::{error, info, warn};
 const DEFAULT_API: &str = "http://localhost:8080";
 const DEFAULT_GPIO_CLK: u32 = 17;
 const DEFAULT_GPIO_DT: u32 = 18;
-const DEFAULT_GPIO_SW: u32 = 27;
 const DEFAULT_DEBOUNCE_US: u64 = 1000;
 const DEFAULT_COUNT_THRESHOLD: i64 = 2;
 const POLL_INTERVAL_MS: u64 = 50;
@@ -43,16 +41,6 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_GPIO_DT);
-    let gpio_sw = std::env::var("GPIO_SW")
-        .ok()
-        .and_then(|s| {
-            if s.to_lowercase() == "none" {
-                None
-            } else {
-                s.parse().ok()
-            }
-        })
-        .or(Some(DEFAULT_GPIO_SW));
     let debounce_us = std::env::var("DEBOUNCE_US")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -68,10 +56,6 @@ async fn main() -> Result<()> {
     info!("  CANWEEB_API      = {}", api);
     info!("  GPIO_CLK         = BCM {}", gpio_clk);
     info!("  GPIO_DT          = BCM {}", gpio_dt);
-    info!(
-        "  GPIO_SW          = {}",
-        gpio_sw.map_or("なし".to_string(), |p| format!("BCM {}", p))
-    );
     info!("  DEBOUNCE_US      = {} µs", debounce_us);
     info!("  COUNT_THRESHOLD  = {} (移動判定)", count_threshold);
     info!("====================================================");
@@ -83,7 +67,7 @@ async fn main() -> Result<()> {
 
     check_canweeb(&client, &api).await;
 
-    let encoder = GpioRotaryEncoder3Pin::new(gpio_clk, gpio_dt, gpio_sw).debounce_us(debounce_us);
+    let encoder = GpioRotaryEncoder3Pin::new(gpio_clk, gpio_dt).debounce_us(debounce_us);
 
     encoder.start().context("エンコーダ監視スレッド起動失敗")?;
 
@@ -139,14 +123,9 @@ async fn run_encoder_loop(
         }
 
         if last_stats_at.elapsed() >= Duration::from_secs(5) {
-            let sw_pressed = encoder.is_switch_pressed();
             info!(
-                "  [統計] イベント:{} 左:{} 右:{} 現在カウント:{} SW:{}",
-                total_events,
-                left_count,
-                right_count,
-                current,
-                if sw_pressed { "押下" } else { "未押下" }
+                "  [統計] イベント:{} 左:{} 右:{} 現在カウント:{}",
+                total_events, left_count, right_count, current
             );
             last_stats_at = Instant::now();
         }

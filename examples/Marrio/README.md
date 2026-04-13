@@ -10,7 +10,7 @@ CanWeeb (メッシュネットワーク) と CmdLib (GPIO/シリアル制御) �
 ```
 [PC]  ──LAN──  [ラズパイA]  ──USB Serial──  [Arduino]
                                                HC-SR04 (TRIG=12, ECHO=13)
-[PC]  ──LAN──  [ラズパイB]  ──GPIO──  3ピンロータリーエンコーダ (CLK=GPIO17, DT=GPIO18, SW=GPIO27)
+[PC]  ──LAN──  [ラズパイB]  ──GPIO──  3ピンロータリーエンコーダ (CLK=GPIO17, DT=GPIO18, GND)
 ```
 
 | ノード | node_id | 役割 |
@@ -123,31 +123,27 @@ cargo run --release
 ```bash
 cd examples/Marrio/raspi_b
 
-# デフォルト設定 (GPIO_CLK=17, GPIO_DT=18, GPIO_SW=27)
+# デフォルト設定 (GPIO_CLK=17, GPIO_DT=18)
 CANWEEB_API=http://localhost:8080 cargo run --release
 
 # GPIO ピンを変更する場合
 CANWEEB_API=http://localhost:8080 \
 GPIO_CLK=17 \
 GPIO_DT=18 \
-GPIO_SW=27 \
 DEBOUNCE_US=1000 \
 COUNT_THRESHOLD=2 \
 cargo run --release
-
-# スイッチなしの場合
-CANWEEB_API=http://localhost:8080 GPIO_SW=none cargo run --release
 ```
 
-**配線 (3ピンロータリーエンコーダ KY-040):**
+**配線 (3ピンロータリーエンコーダ):**
 
 | エンコーダ | Raspberry Pi |
 |-----------|-------------|
 | CLK (A相) | GPIO 17 (BCM) |
 | DT (B相) | GPIO 18 (BCM) |
-| SW | GPIO 27 (BCM) |
-| + | 3.3V |
 | GND | GND |
+
+※ 3ピンエンコーダは CLK, DT, GND の3本のみです。電源は Raspberry Pi 内部のプルアップを使用します。
 
 ---
 
@@ -182,7 +178,6 @@ CANWEEB_API=http://<PC_IP>:8080 python marrio_game.py
 | `CANWEEB_API` | `http://localhost:8080` | CanWeeb API URL |
 | `GPIO_CLK` | `17` | CLK (A相) ピン (BCM) |
 | `GPIO_DT` | `18` | DT (B相) ピン (BCM) |
-| `GPIO_SW` | `27` | SW (スイッチ) ピン (BCM)、`none` で無効 |
 | `DEBOUNCE_US` | `1000` | デバウンス時間 (µs) |
 | `COUNT_THRESHOLD` | `2` | 移動判定カウント閾値 |
 
@@ -248,6 +243,7 @@ sudo usermod -aG gpio $USER
 ```
 
 ### ロータリーエンコーダが反応しない
-- CLK・DT・SW ピンの配線を確認
+- CLK・DT・GND ピンの配線を確認
+- 3ピンエンコーダは CLK, DT, GND の3本のみです（電源ピンは不要）
 - デバウンス時間を調整: `DEBOUNCE_US=2000` (大きくするとノイズに強くなる)
 - カウント閾値を調整: `COUNT_THRESHOLD=1` (小さくすると感度が上がる)
