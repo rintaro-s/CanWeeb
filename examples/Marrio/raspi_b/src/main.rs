@@ -1,18 +1,18 @@
-/// Marrio - Raspberry Pi B (GPIO 直接制御版)
+/// Marrio - Raspberry Pi B (3ピンロータリーエンコーダ版)
 ///
-/// ロータリーエンコーダを GPIO で直接読み取り、移動イベントを CanWeeb 経由で送信する。
-/// STM32 などの外部マイコンは不要。
+/// 3ピンロータリーエンコーダ (CLK, DT, SW) を GPIO で直接読み取り、
+/// 移動イベントを CanWeeb 経由で送信する。
 ///
 /// 環境変数:
 ///   CANWEEB_API      - CanWeeb Web API URL (default: http://localhost:8080)
-///   GPIO_ENC_A       - エンコーダ A 相の BCM 番号 (default: 17)
-///   GPIO_ENC_B       - エンコーダ B 相の BCM 番号 (default: 18)
-///   DEBOUNCE_US      - デバウンス時間 µs (default: 500)
-///   MIN_PULSE_US     - 最小パルス幅 µs (default: 200)
+///   GPIO_CLK         - CLK (A相) ピンの BCM 番号 (default: 17)
+///   GPIO_DT          - DT (B相) ピンの BCM 番号 (default: 18)
+///   GPIO_SW          - SW (スイッチ) ピンの BCM 番号 (default: 27, None で無効)
+///   DEBOUNCE_US      - デバウンス時間 µs (default: 1000)
 ///   COUNT_THRESHOLD  - 移動判定カウント閾値 (default: 2)
 
 use anyhow::{Context, Result};
-use canweeb_cmdlib::GpioRotaryEncoder;
+use canweeb_cmdlib::GpioRotaryEncoder3Pin;
 use reqwest::Client;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -20,10 +20,10 @@ use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 const DEFAULT_API: &str = "http://localhost:8080";
-const DEFAULT_GPIO_A: u32 = 17;
-const DEFAULT_GPIO_B: u32 = 18;
-const DEFAULT_DEBOUNCE_US: u64 = 500;
-const DEFAULT_MIN_PULSE_US: u64 = 200;
+const DEFAULT_GPIO_CLK: u32 = 17;
+const DEFAULT_GPIO_DT: u32 = 18;
+const DEFAULT_GPIO_SW: u32 = 27;
+const DEFAULT_DEBOUNCE_US: u64 = 1000;
 const DEFAULT_COUNT_THRESHOLD: i64 = 2;
 const POLL_INTERVAL_MS: u64 = 50;
 const PC_NODE: &str = "marrio-pc";
@@ -35,35 +35,44 @@ async fn main() -> Result<()> {
         .init();
 
     let api = std::env::var("CANWEEB_API").unwrap_or_else(|_| DEFAULT_API.to_string());
-    let gpio_a = std::env::var("GPIO_ENC_A")
+    let gpio_clk = std::env::var("GPIO_CLK")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_GPIO_A);
-    let gpio_b = std::env::var("GPIO_ENC_B")
+        .unwrap_or(DEFAULT_GPIO_CLK);
+    let gpio_dt = std::env::var("GPIO_DT")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_GPIO_B);
+        .unwrap_or(DEFAULT_GPIO_DT);
+    let gpio_sw = std::env::var("GPIO_SW")
+        .ok()
+        .and_then(|s| {
+            if s.to_lowercase() == "none" {
+                None
+            } else {
+                s.parse().ok()
+            }
+        })
+        .or(Some(DEFAULT_GPIO_SW));
     let debounce_us = std::env::var("DEBOUNCE_US")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_DEBOUNCE_US);
-    let min_pulse_us = std::env::var("MIN_PULSE_US")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_MIN_PULSE_US);
     let count_threshold = std::env::var("COUNT_THRESHOLD")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_COUNT_THRESHOLD);
 
     info!("====================================================");
-    info!("  Marrio RasPi-B  GPIO ロータリーエンコーダ (STM32 不要)");
+    info!("  Marrio RasPi-B  3ピンロータリーエンコーダ (GPIO 直接)");
     info!("====================================================");
     info!("  CANWEEB_API      = {}", api);
-    info!("  GPIO_ENC_A       = BCM {}", gpio_a);
-    info!("  GPIO_ENC_B       = BCM {}", gpio_b);
+    info!("  GPIO_CLK         = BCM {}", gpio_clk);
+    info!("  GPIO_DT          = BCM {}", gpio_dt);
+    info!(
+        "  GPIO_SW          = {}",
+        gpio_sw.map_or("なし".to_string(), |p| format!("BCM {}", p))
+    );
     info!("  DEBOUNCE_US      = {} µs", debounce_us);
-    info!("  MIN_PULSE_US     = {} µs", min_pulse_us);
     info!("  COUNT_THRESHOLD  = {} (移動判定)", count_threshold);
     info!("====================================================");
 
@@ -74,13 +83,11 @@ async fn main() -> Result<()> {
 
     check_canweeb(&client, &api).await;
 
-    let encoder = GpioRotaryEncoder::new(gpio_a, gpio_b)
-        .debounce_us(debounce_us)
-        .min_pulse_us(min_pulse_us);
+    let encoder = GpioRotaryEncoder3Pin::new(gpio_clk, gpio_dt, gpio_sw).debounce_us(debounce_us);
 
     encoder.start().context("エンコーダ監視スレッド起動失敗")?;
 
-    info!("━━━ GPIO ロータリーエンコーダ監視開始 ━━━");
+    info!("━━━ 3ピンロータリーエンコーダ監視開始 ━━━");
     info!("");
 
     run_encoder_loop(&client, &api, &encoder, count_threshold).await
@@ -89,7 +96,7 @@ async fn main() -> Result<()> {
 async fn run_encoder_loop(
     client: &Client,
     api: &str,
-    encoder: &GpioRotaryEncoder,
+    encoder: &GpioRotaryEncoder3Pin,
     count_threshold: i64,
 ) -> Result<()> {
     let mut prev_count = 0i64;
@@ -132,9 +139,14 @@ async fn run_encoder_loop(
         }
 
         if last_stats_at.elapsed() >= Duration::from_secs(5) {
+            let sw_pressed = encoder.is_switch_pressed();
             info!(
-                "  [統計] イベント:{} 左:{} 右:{} 現在カウント:{}",
-                total_events, left_count, right_count, current
+                "  [統計] イベント:{} 左:{} 右:{} 現在カウント:{} SW:{}",
+                total_events,
+                left_count,
+                right_count,
+                current,
+                if sw_pressed { "押下" } else { "未押下" }
             );
             last_stats_at = Instant::now();
         }
@@ -178,7 +190,12 @@ async fn send_move(client: &Client, api: &str, direction: &str, delta: i64) -> R
 async fn check_canweeb(client: &Client, api: &str) {
     info!("─── CanWeeb API 到達性チェック ────────────────────");
     let url = format!("{}/api/status", api);
-    match client.get(&url).timeout(Duration::from_secs(3)).send().await {
+    match client
+        .get(&url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => {
             info!("  ✓ {} 到達可能 (HTTP {})", api, resp.status());
         }

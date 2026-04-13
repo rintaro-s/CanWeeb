@@ -464,6 +464,180 @@ impl Drop for GpioRotaryEncoder {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  GpioRotaryEncoder3Pin (CLK, DT, SW の 3ピン版)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 3ピンロータリーエンコーダ (CLK, DT, SW) を GPIO で直接監視する。
+///
+/// 一般的な KY-040 などの 3ピンエンコーダに対応。
+/// - CLK (A相): クロック信号
+/// - DT (B相): データ信号
+/// - SW: プッシュスイッチ（オプション）
+///
+/// # 使い方
+/// ```no_run
+/// use canweeb_cmdlib::gpio_ext::GpioRotaryEncoder3Pin;
+/// let enc = GpioRotaryEncoder3Pin::new(17, 18, Some(27))
+///     .debounce_us(1000);
+/// enc.start().unwrap();
+///
+/// loop {
+///     let count = enc.count();
+///     let sw_pressed = enc.is_switch_pressed();
+///     println!("count={count}  sw={sw_pressed}");
+/// }
+/// ```
+pub struct GpioRotaryEncoder3Pin {
+    pin_clk_bcm: u32,
+    pin_dt_bcm: u32,
+    pin_sw_bcm: Option<u32>,
+    debounce_us: u64,
+    count: Arc<AtomicI64>,
+    sw_pressed: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+}
+
+impl GpioRotaryEncoder3Pin {
+    /// 3ピンエンコーダを構築する。
+    ///
+    /// - `pin_clk_bcm`: CLK (A相) ピンの BCM 番号
+    /// - `pin_dt_bcm`: DT (B相) ピンの BCM 番号
+    /// - `pin_sw_bcm`: SW (プッシュスイッチ) ピンの BCM 番号（`None` の場合はスイッチなし）
+    pub fn new(pin_clk_bcm: u32, pin_dt_bcm: u32, pin_sw_bcm: Option<u32>) -> Self {
+        Self {
+            pin_clk_bcm,
+            pin_dt_bcm,
+            pin_sw_bcm,
+            debounce_us: 1000,
+            count: Arc::new(AtomicI64::new(0)),
+            sw_pressed: Arc::new(AtomicBool::new(false)),
+            running: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// デバウンス時間 (µs) を設定する。
+    ///
+    /// 3ピンエンコーダは機械的なチャタリングが多いため、
+    /// デフォルトは 1000 µs (1 ms) と長めに設定されている。
+    pub fn debounce_us(mut self, us: u64) -> Self {
+        self.debounce_us = us;
+        self
+    }
+
+    /// バックグラウンドスレッドでエンコーダ監視を開始する。
+    pub fn start(&self) -> Result<(), CmdError> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let pin_clk = self.pin_clk_bcm;
+        let pin_dt = self.pin_dt_bcm;
+        let pin_sw = self.pin_sw_bcm;
+        let debounce = self.debounce_us;
+        let count = Arc::clone(&self.count);
+        let sw_pressed = Arc::clone(&self.sw_pressed);
+        let running = Arc::clone(&self.running);
+
+        thread::Builder::new()
+            .name("gpio-encoder3pin".to_string())
+            .spawn(move || {
+                if let Err(e) = encoder3pin_poll_loop(pin_clk, pin_dt, pin_sw, debounce, count, sw_pressed, running) {
+                    eprintln!("[GpioRotaryEncoder3Pin] ポーリングエラー: {e}");
+                }
+            })
+            .map_err(|e| CmdError::Backend(format!("エンコーダスレッド起動失敗: {e}")))?;
+
+        Ok(())
+    }
+
+    /// バックグラウンド監視を停止する。
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    /// 現在の累積カウントを返す。
+    pub fn count(&self) -> i64 {
+        self.count.load(Ordering::Relaxed)
+    }
+
+    /// カウントをリセットする。
+    pub fn reset(&self) {
+        self.count.store(0, Ordering::Relaxed);
+    }
+
+    /// スイッチが押されているかどうかを返す。
+    ///
+    /// スイッチピンが設定されていない場合は常に `false` を返す。
+    pub fn is_switch_pressed(&self) -> bool {
+        self.sw_pressed.load(Ordering::Relaxed)
+    }
+
+    /// 監視スレッドが動作中かどうかを返す。
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for GpioRotaryEncoder3Pin {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  3ピンエンコーダ ポーリングループ
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn encoder3pin_poll_loop(
+    pin_clk: u32,
+    pin_dt: u32,
+    pin_sw: Option<u32>,
+    debounce_us: u64,
+    count: Arc<AtomicI64>,
+    sw_pressed: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+) -> Result<(), CmdError> {
+    let mut chip = open_gpio_chip()?;
+    let clk_handle = get_input_handle(&mut chip, pin_clk, "enc_clk")?;
+    let dt_handle = get_input_handle(&mut chip, pin_dt, "enc_dt")?;
+    let sw_handle = pin_sw.map(|p| get_input_handle(&mut chip, p, "enc_sw")).transpose()?;
+
+    let mut last_clk = clk_handle.get_value().unwrap_or(0) == 1;
+    let mut stable_at = Instant::now();
+
+    while running.load(Ordering::Relaxed) {
+        let clk = clk_handle
+            .get_value()
+            .map_err(|e| CmdError::Backend(format!("GPIO{pin_clk} 読み取り失敗: {e}")))?
+            == 1;
+        let dt = dt_handle
+            .get_value()
+            .map_err(|e| CmdError::Backend(format!("GPIO{pin_dt} 読み取り失敗: {e}")))?
+            == 1;
+
+        // CLK の立ち下がりエッジで方向判定
+        if !clk && last_clk {
+            if stable_at.elapsed().as_micros() as u64 >= debounce_us {
+                let delta = if dt { 1 } else { -1 };
+                count.fetch_add(delta, Ordering::Relaxed);
+                stable_at = Instant::now();
+            }
+        }
+        last_clk = clk;
+
+        // スイッチ状態更新
+        if let Some(ref sw_h) = sw_handle {
+            let sw = sw_h.get_value().unwrap_or(1) == 0; // プルアップなので LOW = 押下
+            sw_pressed.store(sw, Ordering::Relaxed);
+        }
+
+        spin_sleep_us(100);
+    }
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  エンコーダ ポーリングループ（バックグラウンドスレッド）
 // ─────────────────────────────────────────────────────────────────────────────
 

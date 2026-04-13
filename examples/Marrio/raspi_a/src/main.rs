@@ -1,33 +1,28 @@
-/// Marrio - Raspberry Pi A (GPIO 直接制御版)
+/// Marrio - Raspberry Pi A (Arduino シリアル連携版)
 ///
-/// HC-SR04 超音波センサを GPIO で直接読み取り、ジャンプイベントを CanWeeb 経由で送信する。
-/// Arduino などの外部マイコンは不要。
+/// Arduino から HC-SR04 超音波センサの距離データをシリアル経由で受信し、
+/// ジャンプイベントを CanWeeb 経由で送信する。
 ///
 /// 環境変数:
 ///   CANWEEB_API       - CanWeeb Web API URL (default: http://localhost:8080)
-///   GPIO_TRIG         - TRIG ピンの BCM 番号 (default: 23)
-///   GPIO_ECHO         - ECHO ピンの BCM 番号 (default: 24)
+///   SERIAL_PORT       - シリアルポートパス (default: 自動検出)
+///   BAUD_RATE         - ボーレート (default: 9600)
 ///   JUMP_THRESHOLD_CM - ジャンプ判定距離 cm (default: 30)
-///   SENSOR_SAMPLES    - 1回の測定サンプル数（中央値フィルタ用、default: 3）
-///   MAX_DELTA_CM      - 外れ値検出しきい値 cm (default: 50)
 
 use anyhow::{Context, Result};
-use canweeb_cmdlib::GpioUltrasonicSensor;
 use reqwest::Client;
 use serde_json::json;
+use std::io::{BufRead, BufReader};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 const DEFAULT_API: &str = "http://localhost:8080";
-const DEFAULT_GPIO_TRIG: u32 = 23;
-const DEFAULT_GPIO_ECHO: u32 = 24;
+const DEFAULT_BAUD: u32 = 9600;
 const DEFAULT_JUMP_THRESHOLD_CM: f64 = 30.0;
-const DEFAULT_SAMPLES: usize = 3;
-const DEFAULT_MAX_DELTA_CM: f64 = 50.0;
 const JUMP_COOLDOWN_MS: u64 = 800;
-const MEASURE_INTERVAL_MS: u64 = 100;
 const PC_NODE: &str = "marrio-pc";
+const NO_DATA_WARN_SECS: u64 = 5;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,43 +31,27 @@ async fn main() -> Result<()> {
         .init();
 
     let api = std::env::var("CANWEEB_API").unwrap_or_else(|_| DEFAULT_API.to_string());
-    let gpio_trig = std::env::var("GPIO_TRIG")
+    let baud = std::env::var("BAUD_RATE")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_GPIO_TRIG);
-    let gpio_echo = std::env::var("GPIO_ECHO")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_GPIO_ECHO);
+        .unwrap_or(DEFAULT_BAUD);
     let jump_threshold = std::env::var("JUMP_THRESHOLD_CM")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_JUMP_THRESHOLD_CM);
-    let samples = std::env::var("SENSOR_SAMPLES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_SAMPLES);
-    let max_delta = std::env::var("MAX_DELTA_CM")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_MAX_DELTA_CM);
+    let explicit_port = std::env::var("SERIAL_PORT").ok();
 
     info!("====================================================");
-    info!("  Marrio RasPi-A  GPIO 超音波センサ (Arduino 不要)");
+    info!("  Marrio RasPi-A  超音波センサ (Arduino 連携)");
     info!("====================================================");
     info!("  CANWEEB_API       = {}", api);
-    info!("  GPIO_TRIG         = BCM {}", gpio_trig);
-    info!("  GPIO_ECHO         = BCM {}", gpio_echo);
+    info!("  BAUD_RATE         = {} bps", baud);
     info!("  JUMP_THRESHOLD_CM = {} cm", jump_threshold);
     info!("  JUMP_COOLDOWN_MS  = {} ms", JUMP_COOLDOWN_MS);
-    info!("  SENSOR_SAMPLES    = {} (中央値フィルタ)", samples);
-    info!("  MAX_DELTA_CM      = {} cm (外れ値検出)", max_delta);
+    info!("  SERIAL_PORT       = {}", explicit_port.as_deref().unwrap_or("(自動検出)"));
     info!("====================================================");
-    info!("");
-    info!("⚠ 注意: HC-SR04 の ECHO ピンは 5V 出力です。");
-    info!("  Raspberry Pi の GPIO は 3.3V 入力のため、必ず抵抗分圧");
-    info!("  (1kΩ + 2kΩ) またはレベルシフタを使用してください。");
-    info!("");
+
+    list_serial_ports();
 
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -81,85 +60,147 @@ async fn main() -> Result<()> {
 
     check_canweeb(&client, &api).await;
 
-    let sensor = GpioUltrasonicSensor::new(gpio_trig, gpio_echo)
-        .samples(samples)
-        .max_delta_cm(max_delta);
+    let port_name = resolve_serial_port(explicit_port.as_deref())?;
+    info!("使用シリアルポート: {}", port_name);
 
-    info!("━━━ GPIO 超音波センサ初期化完了 ━━━");
-    info!("");
-
-    run_sensor_loop(&client, &api, &sensor, jump_threshold).await
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        info!("");
+        info!("──── [接続試行 #{attempt}] {} @ {} ────", port_name, baud);
+        match run_sensor_loop(&client, &api, &port_name, baud, jump_threshold).await {
+            Ok(()) => info!("センサーループ終了"),
+            Err(e) => error!("センサーループエラー: {:#}", e),
+        }
+        warn!("5秒後に再接続... (試行 #{attempt})");
+        sleep(Duration::from_secs(5)).await;
+    }
 }
 
 async fn run_sensor_loop(
     client: &Client,
     api: &str,
-    sensor: &GpioUltrasonicSensor,
+    port_name: &str,
+    baud: u32,
     jump_threshold: f64,
 ) -> Result<()> {
+    let port = serialport::new(port_name, baud)
+        .timeout(Duration::from_millis(3000))
+        .open()
+        .with_context(|| {
+            format!(
+                "シリアルポート {} を開けません (baud={})。\n\
+                 Arduino が接続されているか、ポート名が正しいか確認してください。",
+                port_name, baud
+            )
+        })?;
+
+    info!("━━━ {} @ {} baud オープン成功 ━━━", port_name, baud);
+
+    let mut reader = BufReader::new(port);
+    let mut line = String::new();
     let mut last_jump_at: Option<Instant> = None;
-    let mut total_measures = 0u64;
+    let mut total_lines = 0u64;
     let mut valid_count = 0u64;
-    let mut timeout_count = 0u64;
-    let mut outlier_count = 0u64;
+    let mut error_count = 0u64;
+    let mut last_data_at = Instant::now();
     let mut last_stats_at = Instant::now();
 
     loop {
-        total_measures += 1;
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => {
+                warn!("シリアルポートが EOF を返しました（デバイス切断）");
+                break;
+            }
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                total_lines += 1;
+                last_data_at = Instant::now();
 
-        match sensor.measure() {
-            Ok(Some(dist)) => {
-                valid_count += 1;
-
-                let cooldown_ok = last_jump_at
-                    .map_or(true, |t| t.elapsed().as_millis() as u64 >= JUMP_COOLDOWN_MS);
-
-                if valid_count <= 100 || valid_count % 50 == 0 {
-                    info!(
-                        "[測定 #{:>6}] {:>8.2} cm   閾値:{:.1} cm   jump_ready:{}",
-                        valid_count, dist, jump_threshold, cooldown_ok
-                    );
+                if total_lines <= 20 {
+                    info!("[起動確認 raw #{:>4}] {:?}", total_lines, trimmed);
                 }
 
-                if dist < jump_threshold && cooldown_ok {
-                    info!(
-                        "★★★ JUMP 検知! {:.2} cm < {} cm → CanWeeb 送信中...",
-                        dist, jump_threshold
-                    );
-                    last_jump_at = Some(Instant::now());
+                if trimmed == "-1" {
+                    error_count += 1;
+                    if total_lines <= 20 {
+                        info!("  → センサータイムアウト値(-1)。HC-SR04 の配線を確認してください");
+                    }
+                    continue;
+                }
 
-                    let api_c = api.to_string();
-                    let cli_c = client.clone();
-                    tokio::spawn(async move {
-                        match send_jump(&cli_c, &api_c, dist).await {
-                            Ok(()) => info!("  ✓ JUMP 送信完了"),
-                            Err(e) => error!("  ✗ JUMP 送信失敗: {:#}", e),
+                match trimmed.parse::<f64>() {
+                    Ok(dist) if dist > 0.0 && dist < 500.0 => {
+                        valid_count += 1;
+
+                        let cooldown_ok = last_jump_at
+                            .map_or(true, |t| t.elapsed().as_millis() as u64 >= JUMP_COOLDOWN_MS);
+
+                        if valid_count <= 100 || valid_count % 50 == 0 {
+                            info!(
+                                "[測定 #{:>6}] {:>8.2} cm   閾値:{:.1} cm   jump_ready:{}",
+                                valid_count, dist, jump_threshold, cooldown_ok
+                            );
                         }
-                    });
+
+                        if dist < jump_threshold && cooldown_ok {
+                            info!(
+                                "★★★ JUMP 検知! {:.2} cm < {} cm → CanWeeb 送信中...",
+                                dist, jump_threshold
+                            );
+                            last_jump_at = Some(Instant::now());
+
+                            let api_c = api.to_string();
+                            let cli_c = client.clone();
+                            tokio::spawn(async move {
+                                match send_jump(&cli_c, &api_c, dist).await {
+                                    Ok(()) => info!("  ✓ JUMP 送信完了"),
+                                    Err(e) => error!("  ✗ JUMP 送信失敗: {:#}", e),
+                                }
+                            });
+                        }
+                    }
+                    Ok(dist) => {
+                        warn!("[#{:>4}] 範囲外値: {:.2} cm（無視）", total_lines, dist);
+                    }
+                    Err(_) => {
+                        warn!("[#{:>4}] パース失敗: {:?}", total_lines, trimmed);
+                        error_count += 1;
+                    }
+                }
+
+                if last_stats_at.elapsed() >= Duration::from_secs(1) {
+                    info!(
+                        "  [統計] 受信行:{} 有効:{} エラー:{}",
+                        total_lines, valid_count, error_count
+                    );
+                    last_stats_at = Instant::now();
                 }
             }
-            Ok(None) => {
-                outlier_count += 1;
-                if total_measures <= 20 {
-                    warn!("[測定 #{:>6}] タイムアウトまたは外れ値", total_measures);
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                let secs = last_data_at.elapsed().as_secs();
+                if secs >= NO_DATA_WARN_SECS {
+                    warn!(
+                        "⚠⚠⚠ {} 秒間データなし！Arduino が動いているか確認してください ⚠⚠⚠",
+                        secs
+                    );
                 }
+                continue;
             }
             Err(e) => {
-                timeout_count += 1;
-                error!("[測定 #{:>6}] センサーエラー: {:#}", total_measures, e);
+                return Err(anyhow::anyhow!(
+                    "シリアル読み取りエラー: {} (kind={:?})",
+                    e,
+                    e.kind()
+                ));
             }
         }
-
-        if last_stats_at.elapsed() >= Duration::from_secs(5) {
-            info!(
-                "  [統計] 測定:{} 有効:{} タイムアウト:{} 外れ値:{}",
-                total_measures, valid_count, timeout_count, outlier_count
-            );
-            last_stats_at = Instant::now();
-        }
-
-        sleep(Duration::from_millis(MEASURE_INTERVAL_MS)).await;
     }
+    Ok(())
 }
 
 async fn send_jump(client: &Client, api: &str, distance_cm: f64) -> Result<()> {
@@ -167,7 +208,7 @@ async fn send_jump(client: &Client, api: &str, distance_cm: f64) -> Result<()> {
     let payload = json!({
         "event":       "jump",
         "distance_cm": distance_cm,
-        "source":      "raspi-a-gpio",
+        "source":      "raspi-a",
     });
     let body = json!({
         "target":        format!("node:{}", PC_NODE),
@@ -194,10 +235,62 @@ async fn send_jump(client: &Client, api: &str, distance_cm: f64) -> Result<()> {
     Ok(())
 }
 
+fn list_serial_ports() {
+    info!("─── 利用可能なシリアルポート ───────────────────────");
+    match serialport::available_ports() {
+        Err(e) => error!("列挙失敗: {}", e),
+        Ok(ports) if ports.is_empty() => {
+            warn!("シリアルポートが見つかりません。");
+            warn!("Arduino が USB 接続されているか確認してください。");
+        }
+        Ok(ports) => {
+            for (i, p) in ports.iter().enumerate() {
+                let detail = match &p.port_type {
+                    serialport::SerialPortType::UsbPort(u) => format!(
+                        "USB  vid={:04x} pid={:04x}  mfr={:<20} prod={}",
+                        u.vid,
+                        u.pid,
+                        u.manufacturer.as_deref().unwrap_or("?"),
+                        u.product.as_deref().unwrap_or("?"),
+                    ),
+                    serialport::SerialPortType::BluetoothPort => "Bluetooth".to_string(),
+                    serialport::SerialPortType::PciPort => "PCI".to_string(),
+                    serialport::SerialPortType::Unknown => "Unknown".to_string(),
+                };
+                info!("  [{i}] {}   ({detail})", p.port_name);
+            }
+        }
+    }
+    info!("────────────────────────────────────────────────────");
+}
+
+fn resolve_serial_port(explicit: Option<&str>) -> Result<String> {
+    if let Some(p) = explicit {
+        return Ok(p.to_string());
+    }
+
+    let ports = serialport::available_ports().context("シリアルポート列挙失敗")?;
+    for p in &ports {
+        if let serialport::SerialPortType::UsbPort(_) = p.port_type {
+            info!("  → 自動検出: {}", p.port_name);
+            return Ok(p.port_name.clone());
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "USB シリアルポートが見つかりません。SERIAL_PORT 環境変数で明示してください。"
+    ))
+}
+
 async fn check_canweeb(client: &Client, api: &str) {
     info!("─── CanWeeb API 到達性チェック ────────────────────");
     let url = format!("{}/api/status", api);
-    match client.get(&url).timeout(Duration::from_secs(3)).send().await {
+    match client
+        .get(&url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => {
             info!("  ✓ {} 到達可能 (HTTP {})", api, resp.status());
         }
