@@ -28,5 +28,5 @@ pub use crate::types::{ControllerState, Level, PinMode, Pull, SafetyState};
 pub use crate::{encoder_read, encoder_reset};
 pub use crate::gpio_ext::{
 	DtOverlay, GpioUltrasonicSensor, GpioRotaryEncoder, GpioRotaryEncoder3Pin, EncDirection,
-	spin_sleep_us, gpio_sysfs_path, gpio_export, gpio_unexport,
+	spin_sleep_us, gpio_sysfs_path, gpio_export, gpio_unexport, pinctrl_set, pinctrl_get,
 };

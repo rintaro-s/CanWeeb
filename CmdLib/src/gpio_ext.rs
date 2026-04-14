@@ -464,19 +464,82 @@ impl Drop for GpioRotaryEncoder {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  GpioRotaryEncoder3Pin (CLK, DT, GND の 3ピン版 - スイッチなし)
+//  pinctrl 設定ヘルパー
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// pinctrl を使って GPIO ピンの機能を設定する。
+///
+/// Raspberry Pi では GPIO ピンを使う前に pinctrl で機能を設定する必要がある。
+/// 例: `pinctrl set 17 ip pu` (GPIO17 を入力・プルアップに設定)
+///
+/// # 引数
+/// - `pin`: BCM ピン番号
+/// - `func`: 機能 ("ip" = 入力, "op" = 出力, "a0"-"a5" = 代替機能)
+/// - `pull`: プル設定 ("pn" = なし, "pu" = プルアップ, "pd" = プルダウン)
+pub fn pinctrl_set(pin: u32, func: &str, pull: &str) -> Result<(), CmdError> {
+    let status = Command::new("pinctrl")
+        .args(["set", &pin.to_string(), func, pull])
+        .status()
+        .map_err(|e| {
+            CmdError::Backend(format!(
+                "pinctrl コマンドの起動に失敗しました: {}.\n\
+                 pinctrl がインストールされているか確認してください。",
+                e
+            ))
+        })?;
+
+    if !status.success() {
+        return Err(CmdError::Backend(format!(
+            "pinctrl set {} {} {} の実行に失敗しました (exit={})",
+            pin,
+            func,
+            pull,
+            status.code().unwrap_or(-1)
+        )));
+    }
+    Ok(())
+}
+
+/// pinctrl を使って GPIO ピンの現在の設定を取得する。
+pub fn pinctrl_get(pin: u32) -> Result<String, CmdError> {
+    let output = Command::new("pinctrl")
+        .args(["get", &pin.to_string()])
+        .output()
+        .map_err(|e| CmdError::Backend(format!("pinctrl get 起動失敗: {}", e)))?;
+
+    if !output.status.success() {
+        return Err(CmdError::Backend(format!(
+            "pinctrl get {} 失敗 (exit={})",
+            pin,
+            output.status.code().unwrap_or(-1)
+        )));
+    }
+
+    String::from_utf8(output.stdout)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| CmdError::Backend(format!("pinctrl 出力の UTF-8 変換失敗: {}", e)))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  GpioRotaryEncoder3Pin (CLK, DT, GND の 3ピン版 - DTOverlay + pinctrl ベース)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// 3ピンロータリーエンコーダ (CLK, DT, GND) を GPIO で直接監視する。
 ///
-/// スイッチピンのない安価な3ピンエンコーダに対応。
-/// - CLK (A相): クロック信号
-/// - DT (B相): データ信号
-/// - GND: グラウンド
+/// **正しい初期化手順:**
+/// 1. pinctrl でピンを入力・プルアップに設定
+/// 2. DTOverlay で rotary-encoder をロード（オプション、カーネルドライバを使う場合）
+/// 3. GPIO を読み取ってエンコーダ値を監視
 ///
 /// # 使い方
 /// ```no_run
-/// use canweeb_cmdlib::gpio_ext::GpioRotaryEncoder3Pin;
+/// use canweeb_cmdlib::gpio_ext::{GpioRotaryEncoder3Pin, pinctrl_set};
+///
+/// // 1. pinctrl でピンを設定
+/// pinctrl_set(17, "ip", "pu").unwrap(); // GPIO17 を入力・プルアップ
+/// pinctrl_set(18, "ip", "pu").unwrap(); // GPIO18 を入力・プルアップ
+///
+/// // 2. エンコーダを初期化して監視開始
 /// let enc = GpioRotaryEncoder3Pin::new(17, 18)
 ///     .debounce_us(1000);
 /// enc.start().unwrap();
@@ -496,6 +559,8 @@ pub struct GpioRotaryEncoder3Pin {
 
 impl GpioRotaryEncoder3Pin {
     /// 3ピンエンコーダを構築する。
+    ///
+    /// **注意:** この関数を呼ぶ前に `pinctrl_set()` で両ピンを入力・プルアップに設定すること。
     ///
     /// - `pin_clk_bcm`: CLK (A相) ピンの BCM 番号
     /// - `pin_dt_bcm`: DT (B相) ピンの BCM 番号
@@ -519,6 +584,8 @@ impl GpioRotaryEncoder3Pin {
     }
 
     /// バックグラウンドスレッドでエンコーダ監視を開始する。
+    ///
+    /// **注意:** 開始前に `pinctrl_set()` でピンが正しく設定されていることを確認すること。
     pub fn start(&self) -> Result<(), CmdError> {
         if self.running.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -580,6 +647,7 @@ fn encoder3pin_poll_loop(
     count: Arc<AtomicI64>,
     running: Arc<AtomicBool>,
 ) -> Result<(), CmdError> {
+    // GPIO チップをオープン
     let mut chip = open_gpio_chip()?;
     let clk_handle = get_input_handle(&mut chip, pin_clk, "enc_clk")?;
     let dt_handle = get_input_handle(&mut chip, pin_dt, "enc_dt")?;

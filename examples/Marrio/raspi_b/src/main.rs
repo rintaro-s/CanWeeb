@@ -3,6 +3,10 @@
 /// 3ピンロータリーエンコーダ (CLK, DT, GND) を GPIO で直接読み取り、
 /// 移動イベントを CanWeeb 経由で送信する。
 ///
+/// **正しい初期化手順:**
+/// 1. pinctrl でピンを入力・プルアップに設定
+/// 2. GPIO を読み取ってエンコーダ値を監視
+///
 /// 環境変数:
 ///   CANWEEB_API      - CanWeeb Web API URL (default: http://localhost:8080)
 ///   GPIO_CLK         - CLK (A相) ピンの BCM 番号 (default: 17)
@@ -11,7 +15,7 @@
 ///   COUNT_THRESHOLD  - 移動判定カウント閾値 (default: 2)
 
 use anyhow::{Context, Result};
-use canweeb_cmdlib::GpioRotaryEncoder3Pin;
+use canweeb_cmdlib::{GpioRotaryEncoder3Pin, pinctrl_set, pinctrl_get};
 use reqwest::Client;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -67,6 +71,38 @@ async fn main() -> Result<()> {
 
     check_canweeb(&client, &api).await;
 
+    info!("");
+    info!("─── GPIO ピン設定 (pinctrl) ───────────────────────");
+
+    // 1. pinctrl でピンを入力・プルアップに設定
+    info!("  GPIO{} を入力・プルアップに設定中...", gpio_clk);
+    pinctrl_set(gpio_clk, "ip", "pu").context(format!(
+        "GPIO{} の pinctrl 設定に失敗しました。\n\
+         sudo 権限が必要な場合があります。",
+        gpio_clk
+    ))?;
+
+    info!("  GPIO{} を入力・プルアップに設定中...", gpio_dt);
+    pinctrl_set(gpio_dt, "ip", "pu").context(format!(
+        "GPIO{} の pinctrl 設定に失敗しました。\n\
+         sudo 権限が必要な場合があります。",
+        gpio_dt
+    ))?;
+
+    // 設定確認
+    match pinctrl_get(gpio_clk) {
+        Ok(status) => info!("  ✓ GPIO{} 設定: {}", gpio_clk, status),
+        Err(e) => warn!("  ⚠ GPIO{} 設定確認失敗: {:#}", gpio_clk, e),
+    }
+    match pinctrl_get(gpio_dt) {
+        Ok(status) => info!("  ✓ GPIO{} 設定: {}", gpio_dt, status),
+        Err(e) => warn!("  ⚠ GPIO{} 設定確認失敗: {:#}", gpio_dt, e),
+    }
+
+    info!("────────────────────────────────────────────────────");
+    info!("");
+
+    // 2. エンコーダを初期化
     let encoder = GpioRotaryEncoder3Pin::new(gpio_clk, gpio_dt).debounce_us(debounce_us);
 
     encoder.start().context("エンコーダ監視スレッド起動失敗")?;

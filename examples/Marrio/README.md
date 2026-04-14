@@ -120,10 +120,13 @@ cargo run --release
 
 ### 4. ラズパイ B — 3ピンロータリーエンコーダ起動
 
+**重要:** raspi_b は起動時に **pinctrl** で GPIO ピンを自動設定します。
+
 ```bash
 cd examples/Marrio/raspi_b
 
 # デフォルト設定 (GPIO_CLK=17, GPIO_DT=18)
+# 起動時に pinctrl でピンを入力・プルアップに設定します
 CANWEEB_API=http://localhost:8080 cargo run --release
 
 # GPIO ピンを変更する場合
@@ -144,6 +147,11 @@ cargo run --release
 | GND | GND |
 
 ※ 3ピンエンコーダは CLK, DT, GND の3本のみです。電源は Raspberry Pi 内部のプルアップを使用します。
+
+**初期化手順:**
+1. プログラムが `pinctrl set <pin> ip pu` でピンを入力・プルアップに設定
+2. GPIO を読み取ってエンコーダ値を監視
+3. 回転を検出して CanWeeb 経由で PC に送信
 
 ---
 
@@ -231,6 +239,18 @@ SERIAL_PORT=/dev/ttyACM0 cargo run --release
 - Arduino IDE のシリアルモニタで距離データが出力されているか確認
 - ボーレートが 9600 で一致しているか確認
 
+### pinctrl が実行できない (raspi_b)
+```bash
+# pinctrl がインストールされているか確認
+which pinctrl
+
+# インストールされていない場合
+sudo apt-get install raspi-gpio
+
+# sudo 権限が必要な場合
+sudo cargo run --release
+```
+
 ### GPIO が見つからない (raspi_b)
 ```bash
 # GPIO チップの確認
@@ -245,5 +265,6 @@ sudo usermod -aG gpio $USER
 ### ロータリーエンコーダが反応しない
 - CLK・DT・GND ピンの配線を確認
 - 3ピンエンコーダは CLK, DT, GND の3本のみです（電源ピンは不要）
+- pinctrl でピンが正しく設定されているか確認: `pinctrl get 17` と `pinctrl get 18`
 - デバウンス時間を調整: `DEBOUNCE_US=2000` (大きくするとノイズに強くなる)
 - カウント閾値を調整: `COUNT_THRESHOLD=1` (小さくすると感度が上がる)
