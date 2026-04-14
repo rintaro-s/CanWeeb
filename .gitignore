@@ -11,3 +11,4 @@ examples/Marrio/raspi_b/target/debug/
 target/debug/
 examples/Marrio/raspi_a/Cargo.lock
 examples/Marrio/raspi_b/Cargo.lock
+examples/loli/encoder_sender/target/

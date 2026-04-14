@@ -1,0 +1,16 @@
+# Loli PC (親) - CanWeeb 設定
+
+[node]
+node_id = "loli-visualizer"
+listen_addr = "0.0.0.0:8080"
+
+[storage]
+data_dir = "examples/loli/config/data/pc"
+
+[discovery]
+enabled = true
+broadcast_port = 7060
+listen_port = 7060
+
+[mesh]
+listen_port = 7002

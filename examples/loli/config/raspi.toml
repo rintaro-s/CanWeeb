@@ -1,0 +1,16 @@
+# Loli Raspberry Pi (子) - CanWeeb 設定
+
+[node]
+node_id = "loli-encoder-sender"
+listen_addr = "0.0.0.0:8080"
+
+[storage]
+data_dir = "examples/loli/config/data/raspi"
+
+[discovery]
+enabled = true
+broadcast_port = 7060
+listen_port = 7060
+
+[mesh]
+listen_port = 7002
