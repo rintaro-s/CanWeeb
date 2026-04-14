@@ -71,15 +71,20 @@ W ←────┼────→ E
 
 **PC (親):**
 ```bash
+cd /path/to/CanWeeb
 cargo run --release --bin canweeb -- --config examples/loli/config/pc.toml
 ```
 
+起動後、ブラウザで http://localhost:8080 にアクセスして Web UI を確認できます。
+
 **Raspberry Pi (子):**
 ```bash
+cd /path/to/CanWeeb
 cargo run --release --bin canweeb -- --config examples/loli/config/raspi.toml
 ```
 
 > 同一 LAN 内であれば discovery により自動でピア接続されます。
+> ピア接続が確立すると、ログに `Connected to peer: loli-visualizer` のようなメッセージが表示されます。
 
 ---
 

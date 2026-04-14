@@ -2,15 +2,33 @@
 
 [node]
 node_id = "loli-visualizer"
-listen_addr = "0.0.0.0:8080"
+role = "parent"
+tags = ["visualizer", "ui"]
 
 [storage]
-data_dir = "examples/loli/config/data/pc"
+root = "./data/loli-pc"
+retention_seconds = 3600
+
+[web]
+bind = "0.0.0.0:8080"
+
+[transport]
+network_listen = "0.0.0.0:7002"
+connect_interval_ms = 1500
+heartbeat_interval_ms = 1000
+ack_timeout_ms = 2500
+max_hops = 4
 
 [discovery]
 enabled = true
-broadcast_port = 7060
-listen_port = 7060
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
 
-[mesh]
-listen_port = 7002
+[[peers]]
+node_id = "loli-encoder-sender"
+role = "child"
+relationship = "child"
+preferred_transport_order = ["network"]
+tags = ["encoder", "sensor"]
