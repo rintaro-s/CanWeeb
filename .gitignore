@@ -13,3 +13,5 @@ examples/Marrio/raspi_a/Cargo.lock
 examples/Marrio/raspi_b/Cargo.lock
 examples/loli/encoder_sender/target/
 examples/loli/config/data/loli-pc/
+meta-raspberrypi/
+poky/
