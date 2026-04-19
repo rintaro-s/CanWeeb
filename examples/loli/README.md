@@ -1,3 +1,315 @@
+# Loli - Rotary Encoder Direction Visualizer
+
+*Note: Some student engineers in Japan jokingly refer to rotary encoders as `lolicon`.*
+
+Loli is a demo that detects the rotation of a 3-pin rotary encoder and visualizes the current direction in eight directions.
+
+---
+
+## System Overview
+
+```
+[Raspberry Pi (child)]  ──CanWeeb──  [PC (parent)]
+  encoder_sender                   visualizer
+  - Uses DTOverlay                 - WebSocket monitoring
+  - pinctrl configuration          - Real-time display
+  - Direct GPIO reading            - 8-direction visualization
+```
+
+| Component | Role |
+|--------------|------|
+| `encoder_sender` (Rust) | **Child**: Reads a 3-pin rotary encoder using DTOverlay + pinctrl + direct GPIO access, then sends the position through CanWeeb |
+| `loli_visualizer.py` (Python) | **Parent**: Receives position updates over the CanWeeb WebSocket without missing events and displays them in eight directions |
+
+---
+
+## File Layout
+
+```
+examples/loli/
+├── encoder_sender/          # Child script (Rust)
+│   ├── Cargo.toml
+│   └── src/main.rs          # DTOverlay + pinctrl + direct GPIO reading
+├── visualizer/              # Parent script (Python)
+│   ├── loli_visualizer.py   # WebSocket monitoring + visualization
+│   └── requirements.txt
+└── README.md
+```
+
+---
+
+## Eight-Direction Mapping
+
+The initial position is **north (up)**. As the encoder rotates, the visualizer moves through eight directions:
+
+```
+       N ↑
+   NW ↖   |   ↗ NE
+      \   |   /
+W ←────┼────→ E
+      /   |   \
+   SW ↙   |   ↘ SE
+       S ↓
+```
+
+| Direction | Symbol | Description |
+|-----|------|------|
+| N   | ↑    | North (initial position) |
+| NE  | ↗    | Northeast |
+| E   | →    | East |
+| SE  | ↘    | Southeast |
+| S   | ↓    | South |
+| SW  | ↙    | Southwest |
+| W   | ←    | West |
+| NW  | ↖    | Northwest |
+
+By default, the direction changes every 4 steps, so one full turn is 32 steps in total.
+
+---
+
+## Setup
+
+### 1. Start the CanWeeb nodes
+
+**PC (parent):**
+```bash
+cd /path/to/CanWeeb
+cargo run --release --bin canweeb -- --config examples/loli/config/pc.toml
+```
+
+After startup, open `http://localhost:8080` in your browser to check the Web UI.
+
+**Raspberry Pi (child):**
+```bash
+cd /path/to/CanWeeb
+cargo run --release --bin canweeb -- --config examples/loli/config/raspi.toml
+```
+
+> If both nodes are on the same LAN, discovery will connect them automatically.
+> Once the peer connection is established, the log will show a message such as `Connected to peer: loli-visualizer`.
+
+---
+
+### 2. Start the child script (Raspberry Pi)
+
+**Important:** This script **always uses DTOverlay**.
+
+```bash
+cd examples/loli/encoder_sender
+
+# Default settings (GPIO_CLK=17, GPIO_DT=18)
+# The rotary-encoder DTOverlay is loaded automatically
+CANWEEB_API=http://localhost:8080 cargo run --release
+
+# When changing GPIO pins
+CANWEEB_API=http://localhost:8080 \
+GPIO_CLK=17 \
+GPIO_DT=18 \
+DEBOUNCE_US=1000 \
+cargo run --release
+```
+
+**Startup log example:**
+```
+─── DTOverlay setup ─────────────────────────────────
+  Loading DTOverlay rotary-encoder...
+  ✓ DTOverlay rotary-encoder loaded
+  Currently loaded DTOverlays:
+    - rotary-encoder
+────────────────────────────────────────────────────
+
+─── GPIO pin setup (pinctrl) ───────────────────────
+  Setting GPIO17 to input with pull-up...
+  Setting GPIO18 to input with pull-up...
+  ✓ GPIO17: 17: ip    pu | hi // GPIO17 = input
+  ✓ GPIO18: 18: ip    pu | hi // GPIO18 = input
+────────────────────────────────────────────────────
+
+━━━ Rotary encoder monitoring started ━━━
+━━━ DTOverlay + pinctrl + direct GPIO reading ━━━
+```
+
+**Wiring (3-pin rotary encoder):**
+
+| Encoder | Raspberry Pi |
+|-----------|-------------|
+| CLK (A phase) | GPIO 17 (BCM) |
+| DT (B phase) | GPIO 18 (BCM) |
+| GND | GND |
+
+Only three wires are used for a 3-pin encoder: CLK, DT, and GND.
+
+---
+
+### 3. Start the parent script (PC)
+
+```bash
+cd examples/loli/visualizer
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Start the visualizer
+CANWEEB_API=http://localhost:8080 python loli_visualizer.py
+```
+
+**Example output:**
+```
+============================================================
+  Loli Visualizer - Rotary Encoder Position Visualizer
+============================================================
+  CANWEEB_API: http://localhost:8080
+  WebSocket:   ws://localhost:8080/ws/inbox
+  Directions:  8
+  Steps/dir:   4
+============================================================
+
+WebSocket connected: ws://localhost:8080/ws/inbox
+Monitoring encoder position updates...
+Press Ctrl+C to exit
+
+[recv:     12] position:     48  direction: → East (E)
+
+============================================================
+  Position: 48
+  Direction: → East (E)
+  Total received: 12
+  Last update: 19:45:23.456
+============================================================
+```
+
+---
+
+## Environment Variables
+
+**`encoder_sender` (child):**
+
+| Variable | Default | Description |
+|------|-----------|------|
+| `CANWEEB_API` | `http://localhost:8080` | CanWeeb API URL |
+| `GPIO_CLK` | `17` | CLK (A phase) pin (BCM) |
+| `GPIO_DT` | `18` | DT (B phase) pin (BCM) |
+| `DEBOUNCE_US` | `1000` | Debounce time (µs) |
+| `USE_DTOVERLAY` | `true` | Whether to use DTOverlay (**must remain true**) |
+
+**`loli_visualizer.py` (parent):**
+
+| Variable | Default | Description |
+|------|-----------|------|
+| `CANWEEB_API` | `http://localhost:8080` | CanWeeb API URL |
+
+---
+
+## CanWeeb Topic Specification
+
+| Topic | Direction | Traffic Class | Payload (JSON) |
+|-------|------|---------------|----------------|
+| `loli/encoder/position` | Raspberry Pi → PC | **control** | `{"position":48,"delta":4,"source":"loli-encoder-sender"}` |
+
+> `control` topics are persisted in the inbox and delivered reliably over WebSocket `/ws/inbox`.
+
+---
+
+## Technical Details
+
+### DTOverlay usage
+
+`encoder_sender` **always uses DTOverlay**:
+
+1. **Load DTOverlay:**
+   ```rust
+   DtOverlay::load(
+       "rotary-encoder",
+       &[
+           ("pin_a", "17"),
+           ("pin_b", "18"),
+           ("relative_axis", "1"),
+           ("steps-per-period", "1"),
+       ],
+   )?;
+   ```
+
+2. **Configure pinctrl:**
+   ```rust
+   pinctrl_set(17, "ip", "pu")?;  // GPIO17 input + pull-up
+   pinctrl_set(18, "ip", "pu")?;  // GPIO18 input + pull-up
+   ```
+
+3. **Read GPIO directly:**
+   ```rust
+   let encoder = GpioRotaryEncoder3Pin::new(17, 18).debounce_us(1000);
+   encoder.start()?;
+   ```
+
+### Real-time monitoring over WebSocket
+
+`loli_visualizer.py` uses WebSocket `/ws/inbox` to receive every message without missing events:
+
+- Real-time reception over WebSocket instead of HTTP polling
+- `control` topics are persisted in the inbox, so delivery is reliable
+- JSON is parsed directly from `payload_preview` for fast handling
+
+---
+
+## Troubleshooting
+
+### DTOverlay cannot be loaded
+
+```bash
+# Check whether DTOverlay is enabled
+sudo raspi-config
+# → 3 Interface Options → I5 Device Tree Overlays → Enable
+
+# Load manually
+sudo dtoverlay rotary-encoder pin_a=17 pin_b=18 relative_axis=1 steps-per-period=1
+
+# Check loaded overlays
+dtoverlay -l
+```
+
+### pinctrl cannot run
+
+```bash
+# Check whether pinctrl is installed
+which pinctrl
+
+# Install if missing
+sudo apt-get install raspi-gpio
+
+# If sudo privileges are required
+sudo cargo run --release
+```
+
+### WebSocket connection error
+
+```bash
+# Check whether websocket-client is installed
+pip list | grep websocket
+
+# Install it
+pip install websocket-client
+
+# Check whether CanWeeb is running
+curl http://localhost:8080/api/status
+```
+
+### Encoder does not respond
+
+- Check the CLK / DT / GND wiring
+- Confirm the pins are configured correctly with `pinctrl get 17` and `pinctrl get 18`
+- Confirm DTOverlay is loaded with `dtoverlay -l`
+- Adjust debounce time: `DEBOUNCE_US=2000`
+
+---
+
+## License
+
+This sample code is part of the CanWeeb project.
+
+---
+
+## 日本語ver
+
 # Loli - ロータリーエンコーダ方向ビジュアライザ
 
 3ピンロータリーエンコーダの回転を検出し、8方向で現在の向きをビジュアライズするデモです。
