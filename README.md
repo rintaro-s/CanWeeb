@@ -1,82 +1,321 @@
 # CANweeb
 
- ## English Version
+## English Version
 
- This English section was translated with GPT-5.4. It may contain minor inaccuracies compared with the Japanese version below.
+This English section was translated with GPT-5.4. It may contain minor inaccuracies compared with the Japanese section below.
 
- CANweeb is a Rust-based multi-path mesh communication daemon for robotics. It is designed as a communication foundation between microcontrollers, Raspberry Pi systems, and Ubuntu Server nodes.
+CANweeb is a Rust-based multi-path mesh communication daemon for robotics. It is designed as a communication backbone between microcontrollers, Raspberry Pi systems, and Ubuntu Server nodes.
 
- ## Design Principles
+## Design Principles
 
- - **Transport-agnostic** — If TCP can pass through the link, CANweeb can use it, whether it is wired LAN, regular Wi-Fi LAN, Wi-Fi AP, or USB Ethernet.
- - **QoS separation** — `control`, `telemetry`, and `stream` traffic are handled on separate paths and queues.
- - **No sensor-data disk writes by default** — High-frequency sensor and image data stay in memory to avoid wearing out SD or eMMC storage.
- - **Automatic fallback** — If a wired path is lost, unacknowledged `control` traffic can be resent automatically over another transport.
+- **Transport-independent** — As long as TCP can pass through the link, CANweeb can use it: wired LAN, standard Wi-Fi LAN, Wi-Fi AP, or USB Ethernet.
+- **QoS separation** — `control`, `telemetry`, and `stream` traffic are handled on separate paths and queues.
+- **No sensor data written to disk by default** — High-frequency sensor and image data stay in memory so SD and eMMC storage are not worn out.
+- **Automatic fallback** — If a wired path goes down, unacknowledged `control` traffic can be resent automatically over another transport.
 
- ## Project Scope
+## Project Scope
 
- CANweeb is the runtime and mesh layer of this repository.
+CANweeb is the runtime and mesh layer in this repository.
 
- - **CmdLib** provides Raspberry Pi-oriented hardware control utilities such as GPIO access, PWM output, rotary encoder handling, ultrasonic sensing, and Device Tree Overlay helpers.
- - **PiHub** is a related project focused on sending a PC screen to a Raspberry Pi over a direct LAN connection, displaying it on HDMI and exposing it on the web.
+- **CmdLib** provides Raspberry Pi-oriented hardware control utilities such as GPIO access, PWM output, rotary encoder handling, ultrasonic sensing, Device Tree Overlay helpers, and child-side helper processes.
+- **PiHub** is a related project focused on sending a PC screen to a Raspberry Pi over a direct LAN connection, displaying it on HDMI, and exposing it on the web.
 
- ## Transport Selection
+## Transport Selection
 
- CANweeb can use **any path that supports TCP**. In most cases, the easiest setup is to place parent and child nodes on the **same router or the same LAN hub**.
+CANweeb can use **any path that supports TCP**. In most cases, the easiest setup is to place the parent and child nodes on the **same router or the same LAN hub**.
 
- | Path | Typical use | Setting |
- |---|---|---|
- | Wired LAN | Normal deployment under the same router or hub | `network_addr` |
- | Regular Wi-Fi LAN / AP | Devices connected to the same LAN | `network_addr` |
- | USB gadget Ethernet (`192.168.7.x`) | Additional independent transport | `usb_addr` |
+| Path | Typical use | Setting |
+|---|---|---|
+| Wired LAN | Normal deployment under the same router or hub | `network_addr` |
+| Standard Wi-Fi LAN / AP | Devices connected to the same LAN | `network_addr` |
+| USB gadget Ethernet (`192.168.7.x`) | Additional independent transport | `usb_addr` |
 
- ## Automatic Discovery and Pairing
+**Easiest setup**: Connect both parent and child to the same router or LAN hub with wired Ethernet, keep `discovery.enabled = true`, and start the service. In most cases you do not need a fixed `network_addr`.
 
- Within the same LAN, peers can be **detected and connected automatically** through UDP broadcast discovery.
+## Automatic Discovery and Pairing
 
- - Enable it with `discovery.enabled = true`
- - Each node announces its `node_id`, `network_listen` port, and `web` port to `announce_addr`
- - Receivers generate `network_addr` automatically from the sender IP and announced port
- - If `[[peers]]` contains only `node_id`, connection can still be established without fixed IPs
- - Even without explicit `[[peers]]`, discovered peers can appear in status and connect dynamically
+Within the same LAN, peers can be **detected and connected automatically** through UDP broadcast discovery.
 
- ## Traffic Classes
+- Enable it with `discovery.enabled = true`
+- Each node announces its `node_id`, `network_listen` port, and `web` port to `announce_addr`
+- The receiving side automatically generates `network_addr` from the sender IP and announced port
+- If `[[peers]]` contains only `node_id`, connection can still be established without fixed IPs
+- Even without an explicit `[[peers]]` entry, discovered peers can appear in status and connect dynamically
 
- | Class | ACK | Persistence | Typical use |
- |---|---|---|---|
- | `control` | Yes | Disk | Emergency stop, mode changes, GPIO commands, state transitions |
- | `telemetry` | No | Memory (latest value per topic) | IMU, odometry, battery, estimated pose |
- | `stream` | No | Memory (ring buffer) | Camera, RGB-D, LiDAR, large binary payloads |
+## Wi-Fi Automation
 
- > **Important**: Do not send high-frequency sensor data or images over `control`. That increases storage wear, retransmission cost, and control latency.
+In addition to ordinary LAN discovery, the `wifi` section can be used for **automatic parent AP creation** and **automatic child connection to known APs**.
 
- ## Implemented Features
+This is an **optional feature**. It is not enabled by default in the initial setup.
 
- - Dual TCP listeners/connectors for USB and network transports
- - Automatic peer discovery and connection on the same LAN
- - Configurable transport priority and automatic failover
- - Separate `control_tx` and `bulk_tx` queues per connection
- - `control` ACK with hop-by-hop retransmission
- - Latest-value topic cache for `telemetry`
- - Chunked `stream` transfer with automatic reassembly
- - Web UI, HTTP API, and WebSocket updates
- - Duplicate suppression based on `message_id`
- - Loop prevention with `ttl` and `hops`
+- First, verify connectivity using only discovery on the same LAN
+- Set `wifi.auto_manage = true` only when you want Wi-Fi fallback
+- The sample configuration keeps the `CANweeb-Parent` example, but it does not start automatically by default
 
- ## Build and Run
+- Parent node: `wifi.desired_mode = "parent"`
+  - Creates an AP with `nmcli device wifi hotspot`
+- Child node: `wifi.desired_mode = "child"`
+  - Tries to connect to `wifi.fallback_networks` in priority order
+- The parent UI can switch modes, start the AP, connect manually, and disconnect
+- The parent UI can also change each peer's `relationship` and `preferred_transport_order`
+- The parent UI can monitor child power, uptime, queues, inbox, RTT, and connection quality
 
- ```bash
- cargo build --release
- ./target/release/canweeb --config config/example.toml
- ```
+### Actual Wi-Fi Automation Behavior
 
- Web UI: `http://<bind_addr>:8080`
+- **Child mode**
+  - On startup, it tries to connect to the highest-priority SSID among the visible entries in `wifi.fallback_networks`
+  - Even if it is already connected to another Wi-Fi network, it switches to a configured SSID with higher priority when that SSID is visible
+  - If none of the configured candidates are visible, it does not repeatedly disconnect itself just to keep searching for an SSID that is not there
 
- Parent UI: `http://<bind_addr>:8080/parent-ui/`
+- **Parent mode**
+  - On startup, `wifi.interface` is used for AP operation
+  - **If that same wireless interface was already being used for an existing Wi-Fi client connection, that connection will be replaced**
+  - In other words, if you build a parent AP using only `wlan0`, the original home Wi-Fi connection may not be preserved
 
- ## Notes
+### About Internet Connectivity
 
- For the most accurate and complete description, refer to the Japanese section below, which is the primary source in this repository.
+- **Parent and child join an existing LAN / existing Wi-Fi / LAN hub**
+  - If that LAN has Internet access, **both parent and child can also access the Internet normally**
+
+- **Parent creates an AP on `wlan0`**
+  - That `wlan0` is used for parent-child communication
+  - **The existing Internet connection over the same `wlan0` is usually not preserved**
+  - If the parent also needs Internet access, use **wired LAN / USB Ethernet / a separate Wi-Fi interface**
+
+### Practical Startup Tips
+
+- If `network_listen = "0.0.0.0:7002"` is up, LAN / Wi-Fi communication listening is ready
+- For initial setup, simply place both nodes on the **same router or the same LAN hub**
+- If `wifi.auto_manage = false`, the runtime does not depend on `nmcli` or AP mode
+- The parent management UI can be exposed at `http://<bind_addr>:8080/parent-ui/`
+- If `/parent-ui/` returns 404, it is often because an **old `target/release/canweeb` binary is still running**, so rebuild with `cargo build --release` and restart
+
+## Traffic Classes
+
+| Class | ACK | Persistence | Typical use |
+|---|---|---|---|
+| `control` | Yes | Disk | Emergency stop, mode switching, GPIO commands, state transitions |
+| `telemetry` | No | Memory (latest value per topic) | IMU, odometry, battery, estimated pose |
+| `stream` | No | Memory (ring buffer) | Camera, RGB-D, LiDAR, large binary payloads |
+
+> **Important**: Do not send sensor data or images above 100 Hz through `control`. That causes SD / eMMC wear, retransmission overhead, and control latency.
+
+## Implemented Features
+
+- Dual TCP listeners/connectors for USB and network transports, and it works even if only one side is present
+- Automatic peer discovery and connection on the same LAN via UDP broadcast discovery
+- Configurable transport priority and automatic failover
+- Separate `control_tx` / `bulk_tx` queues per connection to keep large streams from blocking control traffic
+- `control` ACK with hop-by-hop retransmission and failover across multiple paths
+- Latest-value cache per `telemetry` topic, kept in memory only, up to 4096 topics
+- Chunked `stream` transfer with automatic reassembly on the receiver side; packet loss is finalized with `StreamClose`
+- Stream ring buffer keeping the latest 8 completed entries in memory
+- Real-time WebSocket push for topics and streams
+- Message deduplication based on `message_id`
+- Loop prevention with `ttl` / `hops`
+- Delivery targets such as `broadcast`, `node:X`, and `nodes:A,B,C`
+- Web UI for send tests, Topic / Stream monitoring, Inbox, and `wpa_cli`
+- Frame size limit of 32 MiB
+
+## Build and Run
+
+```bash
+# Build
+cargo build --release
+
+# Run
+./target/release/canweeb --config config/example.toml
+```
+
+Web UI: `http://<bind_addr>:8080`
+
+Parent UI: `http://<bind_addr>:8080/parent-ui/`
+
+## Configuration
+
+Copy `config/example.toml` and edit it per node.
+
+```toml
+[node]
+node_id = "node-pi"
+role = "child"
+tags = ["robot", "sensor"]
+
+[storage]
+root = "../data"          # only control messages are persisted
+retention_seconds = 86400
+
+[web]
+bind = "0.0.0.0:8080"
+
+[transport]
+network_listen = "0.0.0.0:7002"   # LAN / Wi-Fi listener (optional)
+connect_interval_ms   = 1500
+heartbeat_interval_ms = 1000
+ack_timeout_ms        = 2500
+max_hops              = 4
+
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000
+
+[wifi]
+interface = "wlan0"
+auto_manage = false
+desired_mode = "child"
+hotspot_ssid = "CANweeb-Parent"
+hotspot_password = "canweeb1234"
+hotspot_connection_name = "CANweeb Hotspot"
+status_interval_ms = 2000
+
+[[wifi.fallback_networks]]
+ssid = "CANweeb-Parent"
+password = "canweeb1234"
+priority = 100
+
+[[peers]]
+node_id  = "node-main"
+role = "parent"
+relationship = "parent"
+preferred_transport_order = ["network"]
+# network_addr = "192.168.1.10:7002"
+tags = ["strategy"]
+```
+
+**Minimal configuration**:
+
+```toml
+# for both parent.toml and child.toml
+[discovery]
+enabled = true
+
+[wifi]
+auto_manage = false
+
+[[peers]]
+# only the other node_id is needed
+node_id = "node-main"
+```
+
+## HTTP API
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/status` | Node state and peer list |
+| GET | `/api/wifi/status` | Current Wi-Fi state for this node |
+| POST | `/api/wifi/apply-mode` | Automatically apply `parent` / `child` / `ap` / `client` |
+| POST | `/api/wifi/hotspot/start` | Start an AP immediately |
+| POST | `/api/wifi/connect` | Connect to a specified SSID |
+| POST | `/api/wifi/disconnect` | Disconnect Wi-Fi |
+| GET | `/api/peer-policies` | Peer relationship and transport priority |
+| POST | `/api/peer-policies` | Update peer relationship and transport priority |
+| GET | `/api/inbox` | List control inbox entries |
+| GET | `/api/inbox/:id` | Inbox details + payload base64 |
+| POST | `/api/messages` | Send a message |
+| GET | `/api/topics` | List latest telemetry values |
+| GET | `/api/topic?name=<topic>` | Topic detail including names with `/` |
+| GET | `/api/streams` | List completed streams (ring buffer) |
+| GET | `/api/streams/:stream_id` | Get a stream payload as base64 |
+| POST | `/api/wifi-direct/run` | Run a `wpa_cli` command |
+
+## WebSocket API
+
+| Path | Description |
+|---|---|
+| `ws://.../ws/topics` | Real-time push of telemetry topic updates |
+| `ws://.../ws/streams` | Real-time push when stream assembly completes, including payload |
+
+## POST /api/messages Example
+
+```json
+{
+  "target": "broadcast",
+  "traffic_class": "telemetry",
+  "topic": "imu/accel",
+  "content_type": "application/json",
+  "text": "{\"x\":0.1,\"y\":0.0,\"z\":9.8}"
+}
+```
+
+```json
+{
+  "target": "node:node-main",
+  "traffic_class": "control",
+  "subject": "emergency_stop",
+  "content_type": "application/octet-stream",
+  "payload_base64": "AQ=="
+}
+```
+
+## Recommended Network Setup
+
+### When Parent / Child Are Connected to the Same Router or the Same LAN Hub
+
+```bash
+# DHCP is fine
+# Example:
+ip addr show
+```
+
+If you start CANweeb in this state, the nodes can discover each other through discovery.
+
+### When You Want to Try Wi-Fi Fallback
+
+Change `wifi.auto_manage = true` before using it. It is not enabled by default in the initial setup.
+
+### When You Want to Use USB Ethernet
+
+You can use it in combination by adding `usb_listen` / `usb_addr`, but it is not used in the default sample configuration.
+
+### Example of Auxiliary Wi-Fi Operations (`wpa_cli`)
+
+The `wpa_cli` panel remains in the Web UI, but it is not required for normal operation under a LAN / router setup.
+
+For a simple demo-oriented operation, use the management screen in `examples/parent-ui/index.html`.
+
+```
+interface: wlan0
+args: p2p_find
+```
+
+## Directory Layout
+
+| Path | Description |
+|---|---|
+| `src/main.rs` | Entry point |
+| `src/config.rs` | Configuration structures |
+| `src/protocol.rs` | Frame definitions, `TrafficClass`, and `DeliveryTarget` |
+| `src/storage.rs` | Persistent queue, inbox, topic cache, and stream ring buffer |
+| `src/mesh.rs` | Connection management, retransmission, ACK, topic pub/sub, and stream assembly |
+| `src/web.rs` | Web UI, HTTP API, and WebSocket |
+| `config/example.toml` | Sample configuration |
+
+## Known Limitations
+
+- Routing is flooding-based; path learning is not implemented
+- Time synchronization is not guaranteed; PTP / NTP are needed separately
+- Authentication and encryption are not implemented
+- Discovery only works automatically within the same L2 / LAN segment; it does not cross subnets
+- If a network blocks UDP broadcast, set `network_addr` explicitly
+- No systemd unit is included; create one yourself and point `ExecStart` at this binary
+
+## Role Split Example
+
+```
+Ubuntu Server (strategy / AI)
+    ↕ same LAN / router via CANweeb
+Raspberry Pi (sensor / GPIO / actuator)
+    ↕ LAN / Wi-Fi / other TCP
+Microcontroller / external device
+```
+## 日本語ver
+
+原文を書いて、英語に訳してもらって、それを編集して、日本語にしてもらったので逆翻訳になってます。
+
+※ファクトチェックは済
 
 Rust 製のロボティクス向け多経路メッシュ通信デーモン。マイコン・Raspberry Pi・Ubuntu Server 間をつなぐ通信基盤として設計されています。
 
