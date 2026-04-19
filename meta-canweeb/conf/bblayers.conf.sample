@@ -1,0 +1,12 @@
+# Sample bblayers.conf for CanWeeb image build.
+# Copy this to build/conf/bblayers.conf and adjust CANWEEBROOT.
+
+CANWEEBROOT ?= "/path/to/CanWeeb"
+
+BBLAYERS ?= " \
+    ${CANWEEBROOT}/poky/meta \
+    ${CANWEEBROOT}/poky/meta-poky \
+    ${CANWEEBROOT}/poky/meta-yocto-bsp \
+    ${CANWEEBROOT}/meta-raspberrypi \
+    ${CANWEEBROOT}/meta-canweeb \
+"

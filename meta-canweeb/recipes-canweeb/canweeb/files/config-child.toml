@@ -1,0 +1,25 @@
+[node]
+node_id = "canweeb-child"
+role = "child"
+tags = ["sensor", "actuator"]
+
+[storage]
+root = "/var/lib/canweeb/data"
+retention_seconds = 3600
+
+[web]
+bind = "0.0.0.0:8080"
+
+[transport]
+network_listen = "0.0.0.0:7002"
+connect_interval_ms = 1500
+heartbeat_interval_ms = 1000
+ack_timeout_ms = 2500
+max_hops = 4
+
+[discovery]
+enabled = true
+bind = "0.0.0.0:7060"
+announce_addr = "255.255.255.255:7060"
+announce_interval_ms = 1500
+peer_ttl_ms = 8000

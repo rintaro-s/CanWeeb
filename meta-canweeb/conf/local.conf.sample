@@ -1,0 +1,58 @@
+# Sample local.conf for CanWeeb image build.
+# Copy to build/conf/local.conf and adjust paths.
+
+# Target machine: raspberrypi4-64 recommended for robotics (quad-core, 64bit)
+# Other supported: raspberrypi3-64, raspberrypi4
+MACHINE ?= "raspberrypi4-64"
+
+# Use systemd as init system
+DISTRO_FEATURES:append = " systemd"
+DISTRO_FEATURES_BACKFILL_CONSIDERED += "sysvinit"
+VIRTUAL-RUNTIME_init_manager = "systemd"
+VIRTUAL-RUNTIME_initscripts = "systemd-compat-units"
+
+# Use musl for smaller binaries (or glibc - your choice; glibc needed for Rust std)
+TCLIBC = "glibc"
+
+# Parallel build settings - adjust to your machine
+BB_NUMBER_THREADS ?= "8"
+PARALLEL_MAKE ?= "-j8"
+
+# Download and sstate cache
+DL_DIR ?= "${TOPDIR}/../downloads"
+SSTATE_DIR ?= "${TOPDIR}/../sstate-cache"
+
+# Output directory
+TMPDIR = "${TOPDIR}/tmp"
+
+# Image type: wic for SD card image
+IMAGE_FSTYPES = "wic wic.bz2 wic.bmap"
+
+# Rust cross-compilation via cargo class
+# meta-rust or cargo class from poky is required
+CARGO_HOME = "${TMPDIR}/cargo-home"
+
+# Enable SSH at build time (no password - add your key to image if needed)
+EXTRA_IMAGE_FEATURES ?= "debug-tweaks ssh-server-openssh"
+
+# GPU memory split: minimize for headless robotics node
+RPI_GPU_MEM = "16"
+
+# Enable I2C and SPI
+ENABLE_I2C = "1"
+RPI_EXTRA_CONFIG = '\n# Enable I2C\ndtparam=i2c_arm=on\n# Enable SPI\ndtparam=spi=on\n# Enable UART\nenable_uart=1\n# Disable Bluetooth to free UART\ndtoverlay=disable-bt\n# Rotary encoder overlay (loaded at runtime by CmdLib if needed)\n'
+
+# Kernel: use 6.6 branch
+PREFERRED_VERSION_linux-raspberrypi = "6.6.%"
+
+# DISTRO: use poky
+DISTRO ?= "poky"
+
+# Package format
+PACKAGE_CLASSES ?= "package_rpm"
+
+# Locale
+IMAGE_LINGUAS = "en-us"
+
+# Do not install documentation
+INHERIT += "rm_work"

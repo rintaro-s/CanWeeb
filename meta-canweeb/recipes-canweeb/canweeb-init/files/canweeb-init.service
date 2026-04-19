@@ -1,0 +1,13 @@
+[Unit]
+Description=CanWeeb node role initialization
+DefaultDependencies=no
+Before=canweeb.service network.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/canweeb-init.sh
+
+[Install]
+WantedBy=sysinit.target

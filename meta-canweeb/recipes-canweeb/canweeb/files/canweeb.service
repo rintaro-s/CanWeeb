@@ -1,0 +1,24 @@
+[Unit]
+Description=CanWeeb mesh messaging runtime
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/canweeb --config /etc/canweeb/config.toml
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# Real-time scheduling for robotics use
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+CPUAffinity=2 3
+
+# Memory locking to avoid page faults during operation
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

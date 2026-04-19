@@ -1,0 +1,11 @@
+[Unit]
+Description=Set IRQ affinity to CPU 0-1, isolate CPU 2-3 for CanWeeb
+After=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/irq-affinity.sh
+
+[Install]
+WantedBy=multi-user.target
