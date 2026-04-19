@@ -1,0 +1,18 @@
+From: CanWeeb build fix <build@canweeb>
+Subject: [PATCH] Fix openat2 const qualifier mismatch for GCC 15
+
+GCC 15 tightened the system header declaration of openat2() to use
+'const struct open_how *'. Align pseudo's generated wrapper to match.
+
+--- a/pseudo_wrapfuncs.c
++++ b/pseudo_wrapfuncs.c
+@@ -11530,4 +11530,4 @@
+-static int (*real_openat2)(int dirfd, const char *path, struct open_how *how, size_t size) = NULL;
++static int (*real_openat2)(int dirfd, const char *path, const struct open_how *how, size_t size) = NULL;
+ 
+ int
+-openat2(int dirfd, const char *path, struct open_how *how, size_t size) {
++openat2(int dirfd, const char *path, const struct open_how *how, size_t size) {
+@@ -11607,2 +11607,2 @@
+-wrap_openat2(int dirfd, const char *path, struct open_how *how, size_t size) {
++wrap_openat2(int dirfd, const char *path, const struct open_how *how, size_t size) {

@@ -4,7 +4,7 @@ LICENSE = "Apache-2.0"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=86d3f3a95c324c9479bd8986968f4327"
 
 SRC_URI = "https://files.pythonhosted.org/packages/source/w/websocket_client/websocket_client-${PV}.tar.gz"
-SRC_URI[sha256sum] = "8f59954ba3ef7c938ceacbd88e38c90e76e82fe80f04c6b4fc197dbc1d65f02c"
+SRC_URI[sha256sum] = "3239df9f44da632f96012472805d40a23281a991027ce11d2f45a6f24ac4c3da"
 
 S = "${WORKDIR}/websocket_client-${PV}"
 

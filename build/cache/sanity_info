@@ -1,0 +1,4 @@
+SANITY_VERSION 1
+TMPDIR /var/tmp/canweeb-build
+SSTATE_DIR /var/tmp/canweeb-sstate
+NATIVELSBSTRING arch

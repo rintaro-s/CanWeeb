@@ -13,29 +13,20 @@ IMAGE_INSTALL:append = " \
     canweeb-init \
     robotics-tweaks \
     python3 \
-    python3-pip \
     python3-websocket-client \
     curl \
     iproute2 \
     iw \
     wireless-regdb \
-    crda \
     wpa-supplicant \
-    networkmanager \
-    networkmanager-nmcli \
     usbutils \
     i2c-tools \
-    spi-tools \
     util-linux \
-    util-linux-hwclock \
-    libgpiod \
-    libgpiod-tools \
     dtc \
     kernel-modules \
     openssh-sftp-server \
     sudo \
     bash \
-    htop \
     procps \
 "
 

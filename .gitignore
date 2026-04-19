@@ -1,17 +1,45 @@
 /data
 *.log
 
-CmdLib/target/debug/
+.DS_Store
+.env
+.env.*
+*.tmp
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
 */venv/
+node_modules/
 */node_modules/
-target/release/
-examples/Marrio/config/data/pc/
-examples/Marrio/raspi_a/target/debug/
-examples/Marrio/raspi_b/target/debug/
 target/debug/
+target/release/
+target/.rustc_info.json
+CmdLib/target/
+examples/Marrio/config/data/pc/
+examples/Marrio/raspi_a/target/
+examples/Marrio/raspi_b/target/
 examples/Marrio/raspi_a/Cargo.lock
 examples/Marrio/raspi_b/Cargo.lock
 examples/loli/encoder_sender/target/
+examples/child-serial-daemon/target/
 examples/loli/config/data/loli-pc/
 meta-raspberrypi/
 poky/
+
+# Yocto build output (do NOT ignore meta-canweeb source)
+build/tmp/
+build/conf/
+build/*.log
+build/run-bitbake.sh
+.yocto-downloads/
+.yocto-sstate/
+
+# Generated source tarball (re-created by build-image.sh)
+meta-canweeb/recipes-canweeb/canweeb/files/canweeb-src.tar.gz
+
+# Test artifacts
+/test-canweeb.sh

@@ -52,9 +52,16 @@
 
    <h2>English</h2>
 
-   <a>（I used GPT 5.4 for translating the comments and documentation.There may be some inaccuracies.）</a>
+   <p>This English section was translated with GPT-5.4. It may contain minor inaccuracies compared with the Japanese section below.</p>
 
    <p class="lead">CanWeeb is a node-to-node communication system for robotics, sensors, tools, and interactive applications. It provides reliable control messaging, fast telemetry distribution, stream transfer, a built-in web API, real-time WebSocket updates, peer discovery, Wi-Fi control, and Raspberry Pi hardware integration through CmdLib.</p>
+
+   <h3>Repository Overview</h3>
+   <ul>
+     <li><strong>CanWeeb</strong> is the mesh runtime and communication layer.</li>
+     <li><strong>CmdLib</strong> is the Raspberry Pi hardware-control library for GPIO, PWM, rotary encoders, ultrasonic sensors, overlays, and child-side helper processes.</li>
+     <li><strong>PiHub</strong> is a related project for sending a PC screen to a Raspberry Pi over LAN, displaying it on HDMI, and exposing it as a web-viewable stream.</li>
+   </ul>
 
    <h3>What You Can Do</h3>
    <ul>
@@ -131,20 +138,82 @@
      <li>Streams are assembled and exposed as completed stream records.</li>
    </ul>
 
-   <h3>CmdLib Hardware Features</h3>
+   <h3>CmdLib</h3>
+   <p>CmdLib (<code>canweeb_cmdlib</code>) is a Rust library that provides hardware control APIs for Raspberry Pi. It runs entirely on the Pi without any external microcontroller, using <code>/dev/gpiochip0</code> (gpio-cdev) and standard system commands.</p>
+
+   <h4>DtOverlay — Device Tree Overlay Management</h4>
+   <p>Load, unload, and inspect Raspberry Pi Device Tree Overlays via the <code>dtoverlay</code> command.</p>
    <table>
-     <thead>
-       <tr><th>Feature</th><th>Purpose</th></tr>
-     </thead>
+     <thead><tr><th>Method</th><th>Description</th></tr></thead>
      <tbody>
-       <tr><td>DTOverlay management</td><td>Load, unload, list, and check Raspberry Pi device tree overlays.</td></tr>
-       <tr><td>pinctrl integration</td><td>Set pin mode and pull state through the Raspberry Pi <code>pinctrl</code> utility.</td></tr>
-       <tr><td>Ultrasonic sensor access</td><td>Measure HC-SR04 distance directly through GPIO with filtering.</td></tr>
-       <tr><td>Rotary encoder access</td><td>Read quadrature rotary encoders directly through GPIO.</td></tr>
-       <tr><td>PWM and low-level control</td><td>Use PWM and backend abstractions for low-level hardware control.</td></tr>
-       <tr><td>Remote child program support</td><td>Define and execute child-side programs through CmdLib helpers.</td></tr>
+       <tr><td><code>DtOverlay::load(name, params)</code></td><td>Load an overlay with optional key=value parameters.</td></tr>
+       <tr><td><code>DtOverlay::unload(name)</code></td><td>Unload a named overlay.</td></tr>
+       <tr><td><code>DtOverlay::list()</code></td><td>Return a list of currently loaded overlays.</td></tr>
+       <tr><td><code>DtOverlay::is_loaded(name)</code></td><td>Check whether an overlay is currently active.</td></tr>
      </tbody>
    </table>
+   <pre>DtOverlay::load("rotary-encoder", &[("relative_axis", "1"), ("steps-per-period", "1")])?;
+DtOverlay::unload("rotary-encoder")?;</pre>
+
+   <h4>pinctrl — Pin Mode and Pull Configuration</h4>
+   <p>Configure Raspberry Pi GPIO pin function and pull resistor state via the <code>pinctrl</code> utility.</p>
+   <table>
+     <thead><tr><th>Method</th><th>Description</th></tr></thead>
+     <tbody>
+       <tr><td><code>pinctrl_set(pin, mode, pull)</code></td><td>Set a pin to input/output and configure pull-up/pull-down/none.</td></tr>
+       <tr><td><code>pinctrl_get(pin)</code></td><td>Read the current function and level of a pin.</td></tr>
+     </tbody>
+   </table>
+   <pre>pinctrl_set(17, PinMode::Input, Pull::Up)?;
+let state = pinctrl_get(17)?;</pre>
+
+   <h4>GpioUltrasonicSensor — HC-SR04 Distance Measurement</h4>
+   <p>Measure distance using an HC-SR04 ultrasonic sensor directly wired to GPIO pins. Applies median filtering over multiple samples and discards outliers.</p>
+   <table>
+     <thead><tr><th>Parameter</th><th>Description</th></tr></thead>
+     <tbody>
+       <tr><td><code>trigger_pin</code></td><td>GPIO pin connected to HC-SR04 TRIG.</td></tr>
+       <tr><td><code>echo_pin</code></td><td>GPIO pin connected to HC-SR04 ECHO.</td></tr>
+       <tr><td><code>samples</code></td><td>Number of measurements to take for median filtering.</td></tr>
+     </tbody>
+   </table>
+   <pre>let sensor = GpioUltrasonicSensor::new(23, 24, 5)?;
+let distance_cm = sensor.measure_cm()?;</pre>
+
+   <h4>GpioRotaryEncoder3Pin — Quadrature Rotary Encoder</h4>
+   <p>Read a 3-pin quadrature rotary encoder directly from GPIO. Supports software debounce and atomic position reading from a background thread.</p>
+   <table>
+     <thead><tr><th>Parameter</th><th>Description</th></tr></thead>
+     <tbody>
+       <tr><td><code>pin_a</code>, <code>pin_b</code></td><td>Two quadrature signal pins.</td></tr>
+       <tr><td><code>pin_sw</code></td><td>Optional push-button switch pin.</td></tr>
+       <tr><td><code>debounce_us</code></td><td>Minimum pulse width in microseconds to accept as valid.</td></tr>
+     </tbody>
+   </table>
+   <pre>let enc = GpioRotaryEncoder3Pin::new(17, 27, 22, 500)?;
+let position = enc.position(); // i64, updated by background thread</pre>
+
+   <h4>PwmOutput — PWM Motor and Servo Control</h4>
+   <p>Generate PWM signals for motors, servos, and other PWM-controlled devices via the Arduino-compatible backend abstraction.</p>
+   <table>
+     <thead><tr><th>Method</th><th>Description</th></tr></thead>
+     <tbody>
+       <tr><td><code>PwmOutput::new(pin)</code></td><td>Create a PWM output on a pin (default 25 kHz).</td></tr>
+       <tr><td><code>.frequency(hz)</code></td><td>Set PWM frequency.</td></tr>
+       <tr><td><code>.range(min%, max%)</code></td><td>Clamp duty cycle range.</td></tr>
+       <tr><td><code>.set_duty(percent)</code></td><td>Apply duty cycle (0.0–100.0).</td></tr>
+     </tbody>
+   </table>
+   <pre>let mut pwm = PwmOutput::new(12).frequency(50);
+pwm.set_duty(7.5)?; // 7.5% = servo center</pre>
+
+   <h4>RemoteExec — Child Program Execution</h4>
+   <p>Define and spawn child-side programs through CmdLib. Useful for running sensor reader binaries managed by the CanWeeb runtime.</p>
+   <pre>let child = RemoteExec::new("sensor-reader", &["/usr/bin/sensor-reader", "--port", "/dev/ttyUSB0"]);
+child.spawn()?;</pre>
+
+   <h4>Runtime — Async Task Integration</h4>
+   <p>CmdLib provides a <code>Runtime</code> handle to integrate hardware polling loops into a Tokio async runtime alongside the CanWeeb mesh tasks.</p>
 
    <h3>Examples</h3>
    <h4>Marrio</h4>
@@ -214,7 +283,16 @@ cargo run --release --bin canweeb -- --config config/parent.toml</pre>
 
    <h2 class="section-gap">日本語</h2>
 
+   <p>この英語セクションは GPT-5.4 を使って翻訳しています。日本語版と比べて細かな不正確さが含まれる可能性があります。</p>
+
    <p class="lead">CanWeeb は、ロボティクス、センサー、ツール、インタラクティブアプリケーション向けのノード間通信システムです。信頼性の高い制御メッセージ配送、高速な telemetry 配信、stream 転送、内蔵 Web API、リアルタイム WebSocket 更新、ピア discovery、Wi-Fi 制御、そして CmdLib による Raspberry Pi ハードウェア統合を提供します。</p>
+
+   <h3>リポジトリ概要</h3>
+   <ul>
+     <li><strong>CanWeeb</strong> は、メッシュ通信ランタイムと通信基盤です。</li>
+     <li><strong>CmdLib</strong> は、GPIO、PWM、ロータリーエンコーダ、超音波センサ、overlay 操作、子側補助プロセス実行のための Raspberry Pi 向けハードウェア制御ライブラリです。</li>
+     <li><strong>PiHub</strong> は、PC 画面を LAN 経由で Raspberry Pi に送り、Pi の HDMI に表示しつつ、Web ブラウザでも視聴できるようにする関連プロジェクトです。</li>
+   </ul>
 
    <h3>何ができるか</h3>
    <ul>
@@ -291,20 +369,82 @@ cargo run --release --bin canweeb -- --config config/parent.toml</pre>
      <li>stream は組み立てられ、完了済み stream として参照できます。</li>
    </ul>
 
-   <h3>CmdLib ハードウェア機能</h3>
+   <h3>CmdLib</h3>
+   <p>CmdLib (<code>canweeb_cmdlib</code>) は、Raspberry Pi のハードウェアを制御するための Rust ライブラリです。外部マイコンは不要で、<code>/dev/gpiochip0</code>（gpio-cdev）とシステムコマンドのみで動作します。</p>
+
+   <h4>DtOverlay — Device Tree Overlay 管理</h4>
+   <p><code>dtoverlay</code> コマンド経由で Raspberry Pi の DTOverlay をロード・アンロード・確認します。</p>
    <table>
-     <thead>
-       <tr><th>機能</th><th>用途</th></tr>
-     </thead>
+     <thead><tr><th>メソッド</th><th>説明</th></tr></thead>
      <tbody>
-       <tr><td>DTOverlay 管理</td><td>Raspberry Pi の Device Tree Overlay をロード、アンロード、列挙、確認できます。</td></tr>
-       <tr><td>pinctrl 連携</td><td>Raspberry Pi の <code>pinctrl</code> を使ってピン機能とプル設定を行えます。</td></tr>
-       <tr><td>超音波センサー</td><td>HC-SR04 の距離を GPIO 直結で測定し、フィルタ処理も行えます。</td></tr>
-       <tr><td>ロータリーエンコーダ</td><td>クアドラチャロータリーエンコーダを GPIO 直結で読み取れます。</td></tr>
-       <tr><td>PWM と低レベル制御</td><td>PWM と backend 抽象化を使って低レベル制御ができます。</td></tr>
-       <tr><td>子プログラム実行補助</td><td>CmdLib 補助機能により子側プログラムの定義と実行ができます。</td></tr>
+       <tr><td><code>DtOverlay::load(name, params)</code></td><td>オーバーレイを key=value パラメータ付きでロードします。</td></tr>
+       <tr><td><code>DtOverlay::unload(name)</code></td><td>指定オーバーレイをアンロードします。</td></tr>
+       <tr><td><code>DtOverlay::list()</code></td><td>現在ロード済みのオーバーレイ一覧を返します。</td></tr>
+       <tr><td><code>DtOverlay::is_loaded(name)</code></td><td>オーバーレイがアクティブかどうかを確認します。</td></tr>
      </tbody>
    </table>
+   <pre>DtOverlay::load("rotary-encoder", &[("relative_axis", "1"), ("steps-per-period", "1")])?;
+DtOverlay::unload("rotary-encoder")?;</pre>
+
+   <h4>pinctrl — ピンモード・プル設定</h4>
+   <p><code>pinctrl</code> ユーティリティを使って GPIO ピンの機能とプル抵抗設定を行います。</p>
+   <table>
+     <thead><tr><th>関数</th><th>説明</th></tr></thead>
+     <tbody>
+       <tr><td><code>pinctrl_set(pin, mode, pull)</code></td><td>ピンを入力/出力に設定し、プルアップ/プルダウン/なしを指定します。</td></tr>
+       <tr><td><code>pinctrl_get(pin)</code></td><td>現在のピン機能とレベルを読み取ります。</td></tr>
+     </tbody>
+   </table>
+   <pre>pinctrl_set(17, PinMode::Input, Pull::Up)?;
+let state = pinctrl_get(17)?;</pre>
+
+   <h4>GpioUltrasonicSensor — HC-SR04 超音波距離測定</h4>
+   <p>HC-SR04 超音波センサを GPIO に直結して距離を測定します。複数サンプルの中央値フィルタと外れ値除去を適用します。</p>
+   <table>
+     <thead><tr><th>パラメータ</th><th>説明</th></tr></thead>
+     <tbody>
+       <tr><td><code>trigger_pin</code></td><td>HC-SR04 の TRIG に接続した GPIO ピン番号。</td></tr>
+       <tr><td><code>echo_pin</code></td><td>HC-SR04 の ECHO に接続した GPIO ピン番号。</td></tr>
+       <tr><td><code>samples</code></td><td>中央値フィルタのサンプル数。</td></tr>
+     </tbody>
+   </table>
+   <pre>let sensor = GpioUltrasonicSensor::new(23, 24, 5)?;
+let distance_cm = sensor.measure_cm()?;</pre>
+
+   <h4>GpioRotaryEncoder3Pin — クアドラチャロータリーエンコーダ</h4>
+   <p>3 ピンのクアドラチャロータリーエンコーダを GPIO 直結で読み取ります。ソフトウェアデバウンスとバックグラウンドスレッドによるアトミック位置更新に対応します。</p>
+   <table>
+     <thead><tr><th>パラメータ</th><th>説明</th></tr></thead>
+     <tbody>
+       <tr><td><code>pin_a</code>, <code>pin_b</code></td><td>クアドラチャの 2 信号ピン。</td></tr>
+       <tr><td><code>pin_sw</code></td><td>プッシュスイッチのピン（省略可）。</td></tr>
+       <tr><td><code>debounce_us</code></td><td>有効と判定する最小パルス幅（マイクロ秒）。</td></tr>
+     </tbody>
+   </table>
+   <pre>let enc = GpioRotaryEncoder3Pin::new(17, 27, 22, 500)?;
+let position = enc.position(); // i64、バックグラウンドスレッドが更新</pre>
+
+   <h4>PwmOutput — PWM モーター・サーボ制御</h4>
+   <p>Arduino 互換の backend 抽象化を通じて、モーター・サーボ等の PWM デバイスを制御します。</p>
+   <table>
+     <thead><tr><th>メソッド</th><th>説明</th></tr></thead>
+     <tbody>
+       <tr><td><code>PwmOutput::new(pin)</code></td><td>指定ピンに PWM 出力を作成します（デフォルト 25 kHz）。</td></tr>
+       <tr><td><code>.frequency(hz)</code></td><td>PWM 周波数を設定します。</td></tr>
+       <tr><td><code>.range(min%, max%)</code></td><td>デューティ比の範囲を制限します。</td></tr>
+       <tr><td><code>.set_duty(percent)</code></td><td>デューティ比を適用します（0.0〜100.0）。</td></tr>
+     </tbody>
+   </table>
+   <pre>let mut pwm = PwmOutput::new(12).frequency(50);
+pwm.set_duty(7.5)?; // 7.5% = サーボ中央</pre>
+
+   <h4>RemoteExec — 子プログラム実行</h4>
+   <p>CmdLib のヘルパーを使って子側プログラムを定義・起動します。CanWeeb ランタイムが管理するセンサーリーダーバイナリの実行に使用します。</p>
+   <pre>let child = RemoteExec::new("sensor-reader", &["/usr/bin/sensor-reader", "--port", "/dev/ttyUSB0"]);
+child.spawn()?;</pre>
+
+   <h4>Runtime — 非同期タスク統合</h4>
+   <p>CmdLib は <code>Runtime</code> ハンドルを提供し、ハードウェアポーリングループを CanWeeb メッシュタスクと同じ Tokio 非同期ランタイムに統合できます。</p>
 
    <h3>サンプル</h3>
    <h4>Marrio</h4>

@@ -1,5 +1,83 @@
 # CANweeb
 
+ ## English Version
+
+ This English section was translated with GPT-5.4. It may contain minor inaccuracies compared with the Japanese version below.
+
+ CANweeb is a Rust-based multi-path mesh communication daemon for robotics. It is designed as a communication foundation between microcontrollers, Raspberry Pi systems, and Ubuntu Server nodes.
+
+ ## Design Principles
+
+ - **Transport-agnostic** — If TCP can pass through the link, CANweeb can use it, whether it is wired LAN, regular Wi-Fi LAN, Wi-Fi AP, or USB Ethernet.
+ - **QoS separation** — `control`, `telemetry`, and `stream` traffic are handled on separate paths and queues.
+ - **No sensor-data disk writes by default** — High-frequency sensor and image data stay in memory to avoid wearing out SD or eMMC storage.
+ - **Automatic fallback** — If a wired path is lost, unacknowledged `control` traffic can be resent automatically over another transport.
+
+ ## Project Scope
+
+ CANweeb is the runtime and mesh layer of this repository.
+
+ - **CmdLib** provides Raspberry Pi-oriented hardware control utilities such as GPIO access, PWM output, rotary encoder handling, ultrasonic sensing, and Device Tree Overlay helpers.
+ - **PiHub** is a related project focused on sending a PC screen to a Raspberry Pi over a direct LAN connection, displaying it on HDMI and exposing it on the web.
+
+ ## Transport Selection
+
+ CANweeb can use **any path that supports TCP**. In most cases, the easiest setup is to place parent and child nodes on the **same router or the same LAN hub**.
+
+ | Path | Typical use | Setting |
+ |---|---|---|
+ | Wired LAN | Normal deployment under the same router or hub | `network_addr` |
+ | Regular Wi-Fi LAN / AP | Devices connected to the same LAN | `network_addr` |
+ | USB gadget Ethernet (`192.168.7.x`) | Additional independent transport | `usb_addr` |
+
+ ## Automatic Discovery and Pairing
+
+ Within the same LAN, peers can be **detected and connected automatically** through UDP broadcast discovery.
+
+ - Enable it with `discovery.enabled = true`
+ - Each node announces its `node_id`, `network_listen` port, and `web` port to `announce_addr`
+ - Receivers generate `network_addr` automatically from the sender IP and announced port
+ - If `[[peers]]` contains only `node_id`, connection can still be established without fixed IPs
+ - Even without explicit `[[peers]]`, discovered peers can appear in status and connect dynamically
+
+ ## Traffic Classes
+
+ | Class | ACK | Persistence | Typical use |
+ |---|---|---|---|
+ | `control` | Yes | Disk | Emergency stop, mode changes, GPIO commands, state transitions |
+ | `telemetry` | No | Memory (latest value per topic) | IMU, odometry, battery, estimated pose |
+ | `stream` | No | Memory (ring buffer) | Camera, RGB-D, LiDAR, large binary payloads |
+
+ > **Important**: Do not send high-frequency sensor data or images over `control`. That increases storage wear, retransmission cost, and control latency.
+
+ ## Implemented Features
+
+ - Dual TCP listeners/connectors for USB and network transports
+ - Automatic peer discovery and connection on the same LAN
+ - Configurable transport priority and automatic failover
+ - Separate `control_tx` and `bulk_tx` queues per connection
+ - `control` ACK with hop-by-hop retransmission
+ - Latest-value topic cache for `telemetry`
+ - Chunked `stream` transfer with automatic reassembly
+ - Web UI, HTTP API, and WebSocket updates
+ - Duplicate suppression based on `message_id`
+ - Loop prevention with `ttl` and `hops`
+
+ ## Build and Run
+
+ ```bash
+ cargo build --release
+ ./target/release/canweeb --config config/example.toml
+ ```
+
+ Web UI: `http://<bind_addr>:8080`
+
+ Parent UI: `http://<bind_addr>:8080/parent-ui/`
+
+ ## Notes
+
+ For the most accurate and complete description, refer to the Japanese section below, which is the primary source in this repository.
+
 Rust 製のロボティクス向け多経路メッシュ通信デーモン。マイコン・Raspberry Pi・Ubuntu Server 間をつなぐ通信基盤として設計されています。
 
 ## 設計方針
