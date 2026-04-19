@@ -1,0 +1,375 @@
+ <!doctype html>
+ <html lang="en">
+ <head>
+   <meta charset="utf-8" />
+   <meta name="viewport" content="width=device-width, initial-scale=1" />
+   <title>CanWeeb</title>
+   <style>
+     body {
+       font-family: sans-serif;
+       line-height: 1.6;
+       margin: 24px;
+       color: #111;
+       background: #fff;
+     }
+     h1, h2, h3 {
+       margin-top: 1.5em;
+       margin-bottom: 0.5em;
+     }
+     table {
+       border-collapse: collapse;
+       width: 100%;
+       margin: 12px 0;
+     }
+     th, td {
+       border: 1px solid #999;
+       padding: 8px;
+       vertical-align: top;
+       text-align: left;
+     }
+     code, pre {
+       font-family: monospace;
+     }
+     pre {
+       border: 1px solid #999;
+       padding: 12px;
+       overflow-x: auto;
+       white-space: pre-wrap;
+     }
+     ul {
+       padding-left: 20px;
+     }
+     .lead {
+      font-size: 1.05em;
+    }
+     .section-gap {
+       margin-top: 40px;
+     }
+  </style>
+ </head>
+ <body>
+  <h1>CanWeeb</h1>
+
+   <h2>English</h2>
+
+   <a>（I used GPT 5.4 for translating the comments and documentation.There may be some inaccuracies.）</a>
+
+   <p class="lead">CanWeeb is a node-to-node communication system for robotics, sensors, tools, and interactive applications. It provides reliable control messaging, fast telemetry distribution, stream transfer, a built-in web API, real-time WebSocket updates, peer discovery, Wi-Fi control, and Raspberry Pi hardware integration through CmdLib.</p>
+
+   <h3>What You Can Do</h3>
+   <ul>
+     <li>Send reliable control messages between nodes with acknowledgment and persistence.</li>
+     <li>Publish fast-changing telemetry and keep the latest value per topic.</li>
+     <li>Transfer larger binary payloads as streams.</li>
+     <li>Integrate external applications through HTTP and WebSocket APIs.</li>
+     <li>Discover peers automatically on the local network.</li>
+     <li>Manage Wi-Fi mode and connectivity through the API.</li>
+     <li>Connect Raspberry Pi sensors and rotary encoders through CmdLib.</li>
+     <li>Build distributed examples such as Marrio and loli.</li>
+   </ul>
+
+   <h3>Communication Model</h3>
+   <table>
+     <thead>
+       <tr><th>Traffic Class</th><th>Purpose</th></tr>
+     </thead>
+     <tbody>
+       <tr><td><code>control</code></td><td>Reliable commands, events, and state changes with acknowledgment and persistence.</td></tr>
+       <tr><td><code>telemetry</code></td><td>Low-overhead sensor and status updates with latest-value caching.</td></tr>
+       <tr><td><code>stream</code></td><td>Chunked transfer for larger binary payloads.</td></tr>
+     </tbody>
+   </table>
+
+   <p>Messages can be sent to a single node, multiple nodes, or broadcast across the mesh.</p>
+
+   <h3>Web API</h3>
+   <p>CanWeeb includes a built-in HTTP and WebSocket interface for integration, debugging, and monitoring.</p>
+
+   <table>
+     <thead>
+       <tr><th>Route</th><th>Function</th></tr>
+     </thead>
+     <tbody>
+       <tr><td><code>/api/status</code></td><td>Read runtime state, queue counts, inbox counts, and peer status.</td></tr>
+       <tr><td><code>/api/messages</code></td><td>Send a new message.</td></tr>
+       <tr><td><code>/api/inbox</code></td><td>List received control messages.</td></tr>
+       <tr><td><code>/api/inbox/:message_id</code></td><td>Read one inbox item in detail.</td></tr>
+       <tr><td><code>/api/topics</code></td><td>List cached telemetry topics.</td></tr>
+       <tr><td><code>/api/topic?name=...</code></td><td>Read one telemetry topic.</td></tr>
+       <tr><td><code>/api/streams</code></td><td>List completed streams.</td></tr>
+       <tr><td><code>/api/streams/:stream_id</code></td><td>Read one completed stream.</td></tr>
+       <tr><td><code>/api/peer-policies</code></td><td>Read or update peer policy.</td></tr>
+       <tr><td><code>/api/wifi/status</code></td><td>Read Wi-Fi state.</td></tr>
+       <tr><td><code>/api/wifi/apply-mode</code></td><td>Apply Wi-Fi mode.</td></tr>
+       <tr><td><code>/api/wifi/connect</code></td><td>Connect to Wi-Fi.</td></tr>
+       <tr><td><code>/api/wifi/disconnect</code></td><td>Disconnect Wi-Fi.</td></tr>
+       <tr><td><code>/api/wifi/hotspot/start</code></td><td>Start hotspot mode.</td></tr>
+       <tr><td><code>/api/wifi-direct/run</code></td><td>Run a direct <code>wpa_cli</code> command.</td></tr>
+       <tr><td><code>/ws/inbox</code></td><td>Receive live inbox updates.</td></tr>
+       <tr><td><code>/ws/topics</code></td><td>Receive live telemetry updates.</td></tr>
+       <tr><td><code>/ws/streams</code></td><td>Receive live completed-stream updates.</td></tr>
+     </tbody>
+   </table>
+
+   <h3>Message Example</h3>
+   <pre>{
+  "target": "node:peer-a",
+  "traffic_class": "control",
+  "topic": "example/topic",
+  "subject": "example_event",
+  "content_type": "application/json",
+  "text": "{\"hello\":true}"
+}</pre>
+
+   <h3>Node Runtime</h3>
+   <p>A node can listen for incoming connections, connect to configured peers, discover peers over UDP broadcast, report status, dispatch outgoing messages, and clean up old state.</p>
+
+   <h3>Storage</h3>
+   <ul>
+     <li>Control messages can be stored in queue and inbox directories under <code>storage.root</code>.</li>
+     <li>Telemetry keeps the latest value per topic in memory.</li>
+     <li>Streams are assembled and exposed as completed stream records.</li>
+   </ul>
+
+   <h3>CmdLib Hardware Features</h3>
+   <table>
+     <thead>
+       <tr><th>Feature</th><th>Purpose</th></tr>
+     </thead>
+     <tbody>
+       <tr><td>DTOverlay management</td><td>Load, unload, list, and check Raspberry Pi device tree overlays.</td></tr>
+       <tr><td>pinctrl integration</td><td>Set pin mode and pull state through the Raspberry Pi <code>pinctrl</code> utility.</td></tr>
+       <tr><td>Ultrasonic sensor access</td><td>Measure HC-SR04 distance directly through GPIO with filtering.</td></tr>
+       <tr><td>Rotary encoder access</td><td>Read quadrature rotary encoders directly through GPIO.</td></tr>
+       <tr><td>PWM and low-level control</td><td>Use PWM and backend abstractions for low-level hardware control.</td></tr>
+       <tr><td>Remote child program support</td><td>Define and execute child-side programs through CmdLib helpers.</td></tr>
+     </tbody>
+   </table>
+
+   <h3>Examples</h3>
+   <h4>Marrio</h4>
+   <ul>
+     <li>A distributed game where a PC receives movement and jump events over CanWeeb.</li>
+     <li>Raspberry Pi A reads ultrasonic sensor data from Arduino over serial and sends jump events.</li>
+     <li>Raspberry Pi B reads a 3-pin rotary encoder through GPIO and sends left/right movement events.</li>
+   </ul>
+   <pre>marrio/input/jump
+marrio/input/move</pre>
+
+   <h4>loli</h4>
+   <ul>
+     <li>A Raspberry Pi sender reads a rotary encoder and publishes position updates through CanWeeb.</li>
+     <li>A Python visualizer receives updates through WebSocket and maps them to eight directions.</li>
+     <li>The sender uses DTOverlay, pinctrl, and direct GPIO encoder reading.</li>
+   </ul>
+   <pre>loli/encoder/position</pre>
+
+   <h3>Configuration</h3>
+   <table>
+     <thead>
+       <tr><th>Section</th><th>Purpose</th></tr>
+     </thead>
+     <tbody>
+       <tr><td><code>[node]</code></td><td>Node identity, role, and tags.</td></tr>
+       <tr><td><code>[storage]</code></td><td>Storage location and retention.</td></tr>
+       <tr><td><code>[web]</code></td><td>HTTP and WebSocket bind address.</td></tr>
+       <tr><td><code>[transport]</code></td><td>Network or USB listeners and timing.</td></tr>
+       <tr><td><code>[discovery]</code></td><td>Automatic peer discovery.</td></tr>
+       <tr><td><code>[wifi]</code></td><td>Wi-Fi interface, mode, and fallback networks.</td></tr>
+       <tr><td><code>[[peers]]</code></td><td>Known peer definitions.</td></tr>
+     </tbody>
+   </table>
+
+   <pre>[node]
+node_id = "parent"
+role = "parent"
+
+[storage]
+root = "./data/parent"
+
+[web]
+bind = "0.0.0.0:8080"
+
+[transport]
+network_listen = "0.0.0.0:7002"</pre>
+
+   <h3>Getting Started from Clone</h3>
+   <pre>git clone https://github.com/rintaro-s/CanWeeb.git
+cd CanWeeb
+
+cargo run --release --bin canweeb -- --config config/parent.toml</pre>
+
+   <p>The main executable is <code>canweeb</code>. If you omit <code>--config</code>, the default config path in code is <code>config/example.toml</code>.</p>
+
+   <p>To start a second node with another configuration:</p>
+   <pre>cargo run --release --bin canweeb -- --config config/child.toml</pre>
+
+   <h3>Repository Layout</h3>
+   <pre>CanWeeb/
+- src/          # runtime, config, protocol, storage, web, wifi
+- CmdLib/       # Raspberry Pi control library
+- config/       # example node configurations
+- examples/     # application examples including Marrio and loli
+- docs/         # public documentation</pre>
+
+   <h2 class="section-gap">日本語</h2>
+
+   <p class="lead">CanWeeb は、ロボティクス、センサー、ツール、インタラクティブアプリケーション向けのノード間通信システムです。信頼性の高い制御メッセージ配送、高速な telemetry 配信、stream 転送、内蔵 Web API、リアルタイム WebSocket 更新、ピア discovery、Wi-Fi 制御、そして CmdLib による Raspberry Pi ハードウェア統合を提供します。</p>
+
+   <h3>何ができるか</h3>
+   <ul>
+     <li>ACK と永続化付きで、ノード間に信頼性の高い control メッセージを送れます。</li>
+     <li>変化の速い telemetry を配信し、トピックごとに最新値を保持できます。</li>
+     <li>大きなバイナリペイロードを stream として転送できます。</li>
+     <li>HTTP API と WebSocket API を通じて外部アプリと連携できます。</li>
+     <li>ローカルネットワーク上のピアを自動検出できます。</li>
+     <li>API 経由で Wi-Fi モードや接続状態を管理できます。</li>
+     <li>CmdLib を使って Raspberry Pi のセンサーやロータリーエンコーダを扱えます。</li>
+     <li>Marrio や loli のような分散アプリの構成を作れます。</li>
+   </ul>
+
+   <h3>通信モデル</h3>
+   <table>
+     <thead>
+       <tr><th>トラフィッククラス</th><th>用途</th></tr>
+     </thead>
+     <tbody>
+       <tr><td><code>control</code></td><td>ACK と永続化を伴う、コマンド、イベント、状態変更向けの信頼性重視通信です。</td></tr>
+       <tr><td><code>telemetry</code></td><td>最新値キャッシュ付きの、軽量なセンサー・状態更新向け通信です。</td></tr>
+       <tr><td><code>stream</code></td><td>大きなバイナリペイロード向けの分割転送です。</td></tr>
+     </tbody>
+   </table>
+
+   <p>メッセージは単一ノード、複数ノード、またはメッシュ全体へのブロードキャストに送れます。</p>
+
+   <h3>Web API</h3>
+   <p>CanWeeb には、統合、デバッグ、監視のための HTTP / WebSocket インターフェースが内蔵されています。</p>
+
+   <table>
+     <thead>
+       <tr><th>ルート</th><th>機能</th></tr>
+     </thead>
+     <tbody>
+       <tr><td><code>/api/status</code></td><td>ランタイム状態、キュー数、inbox 数、ピア状態を取得します。</td></tr>
+       <tr><td><code>/api/messages</code></td><td>新しいメッセージを送信します。</td></tr>
+       <tr><td><code>/api/inbox</code></td><td>受信済み control メッセージを一覧します。</td></tr>
+       <tr><td><code>/api/inbox/:message_id</code></td><td>1 件の inbox 詳細を取得します。</td></tr>
+       <tr><td><code>/api/topics</code></td><td>キャッシュ済み telemetry を一覧します。</td></tr>
+       <tr><td><code>/api/topic?name=...</code></td><td>1 件の telemetry topic を取得します。</td></tr>
+       <tr><td><code>/api/streams</code></td><td>完了済み stream を一覧します。</td></tr>
+       <tr><td><code>/api/streams/:stream_id</code></td><td>1 件の完了済み stream を取得します。</td></tr>
+       <tr><td><code>/api/peer-policies</code></td><td>ピアポリシーを取得または更新します。</td></tr>
+       <tr><td><code>/api/wifi/status</code></td><td>Wi-Fi 状態を取得します。</td></tr>
+       <tr><td><code>/api/wifi/apply-mode</code></td><td>Wi-Fi モードを適用します。</td></tr>
+       <tr><td><code>/api/wifi/connect</code></td><td>Wi-Fi に接続します。</td></tr>
+       <tr><td><code>/api/wifi/disconnect</code></td><td>Wi-Fi を切断します。</td></tr>
+       <tr><td><code>/api/wifi/hotspot/start</code></td><td>ホットスポットモードを開始します。</td></tr>
+       <tr><td><code>/api/wifi-direct/run</code></td><td><code>wpa_cli</code> を直接実行します。</td></tr>
+       <tr><td><code>/ws/inbox</code></td><td>inbox のリアルタイム更新を受信します。</td></tr>
+       <tr><td><code>/ws/topics</code></td><td>telemetry のリアルタイム更新を受信します。</td></tr>
+       <tr><td><code>/ws/streams</code></td><td>完了済み stream の更新を受信します。</td></tr>
+     </tbody>
+   </table>
+
+   <h3>メッセージ送信例</h3>
+   <pre>{
+  "target": "node:peer-a",
+  "traffic_class": "control",
+  "topic": "example/topic",
+  "subject": "example_event",
+  "content_type": "application/json",
+  "text": "{\"hello\":true}"
+}</pre>
+
+   <h3>ノードランタイム</h3>
+   <p>ノードは、受信接続の待受、設定済みピアへの接続、UDP ブロードキャストによるピア検出、状態レポート、送信メッセージ配送、古い状態のクリーンアップを行えます。</p>
+
+   <h3>ストレージ</h3>
+   <ul>
+     <li>control メッセージは <code>storage.root</code> 配下の queue と inbox に保存されます。</li>
+     <li>telemetry はトピックごとに最新値をメモリ保持します。</li>
+     <li>stream は組み立てられ、完了済み stream として参照できます。</li>
+   </ul>
+
+   <h3>CmdLib ハードウェア機能</h3>
+   <table>
+     <thead>
+       <tr><th>機能</th><th>用途</th></tr>
+     </thead>
+     <tbody>
+       <tr><td>DTOverlay 管理</td><td>Raspberry Pi の Device Tree Overlay をロード、アンロード、列挙、確認できます。</td></tr>
+       <tr><td>pinctrl 連携</td><td>Raspberry Pi の <code>pinctrl</code> を使ってピン機能とプル設定を行えます。</td></tr>
+       <tr><td>超音波センサー</td><td>HC-SR04 の距離を GPIO 直結で測定し、フィルタ処理も行えます。</td></tr>
+       <tr><td>ロータリーエンコーダ</td><td>クアドラチャロータリーエンコーダを GPIO 直結で読み取れます。</td></tr>
+       <tr><td>PWM と低レベル制御</td><td>PWM と backend 抽象化を使って低レベル制御ができます。</td></tr>
+       <tr><td>子プログラム実行補助</td><td>CmdLib 補助機能により子側プログラムの定義と実行ができます。</td></tr>
+     </tbody>
+   </table>
+
+   <h3>サンプル</h3>
+   <h4>Marrio</h4>
+   <ul>
+     <li>PC 側が CanWeeb 経由で移動とジャンプを受信する分散ゲームです。</li>
+     <li>Raspberry Pi A は Arduino から超音波センサ値をシリアル受信し、ジャンプイベントを送ります。</li>
+     <li>Raspberry Pi B は 3 ピンロータリーエンコーダを GPIO で読み取り、左右移動イベントを送ります。</li>
+   </ul>
+   <pre>marrio/input/jump
+marrio/input/move</pre>
+
+   <h4>loli</h4>
+   <ul>
+     <li>Raspberry Pi 側送信プログラムがロータリーエンコーダを読み取り、位置更新を CanWeeb に流します。</li>
+     <li>Python ビジュアライザが WebSocket で更新を受信し、8 方向に変換して表示します。</li>
+     <li>送信側は DTOverlay、pinctrl、GPIO 直接読み取りを使用します。</li>
+   </ul>
+   <pre>loli/encoder/position</pre>
+
+   <h3>設定</h3>
+   <table>
+     <thead>
+       <tr><th>セクション</th><th>用途</th></tr>
+     </thead>
+     <tbody>
+       <tr><td><code>[node]</code></td><td>ノード識別、役割、タグです。</td></tr>
+       <tr><td><code>[storage]</code></td><td>保存先と保持期間です。</td></tr>
+       <tr><td><code>[web]</code></td><td>HTTP・WebSocket の待受アドレスです。</td></tr>
+       <tr><td><code>[transport]</code></td><td>ネットワーク・USB 待受とタイミングです。</td></tr>
+       <tr><td><code>[discovery]</code></td><td>自動ピア検出です。</td></tr>
+       <tr><td><code>[wifi]</code></td><td>Wi-Fi インターフェース、モード、fallback 設定です。</td></tr>
+       <tr><td><code>[[peers]]</code></td><td>既知ピア定義です。</td></tr>
+     </tbody>
+   </table>
+
+   <pre>[node]
+node_id = "parent"
+role = "parent"
+
+[storage]
+root = "./data/parent"
+
+[web]
+bind = "0.0.0.0:8080"
+
+[transport]
+network_listen = "0.0.0.0:7002"</pre>
+
+   <h3>クローンから始める</h3>
+   <pre>git clone https://github.com/rintaro-s/CanWeeb.git
+cd CanWeeb
+
+cargo run --release --bin canweeb -- --config config/parent.toml</pre>
+
+   <p>メイン実行ファイルは <code>canweeb</code> です。<code>--config</code> を省略した場合、コード上のデフォルトは <code>config/example.toml</code> です。</p>
+
+   <p>別設定で 2 台目のノードを起動する場合:</p>
+   <pre>cargo run --release --bin canweeb -- --config config/child.toml</pre>
+
+   <h3>リポジトリ構成</h3>
+   <pre>CanWeeb/
+- src/          # runtime, config, protocol, storage, web, wifi
+- CmdLib/       # Raspberry Pi control library
+- config/       # example node configurations
+- examples/     # application examples including Marrio and loli
+- docs/         # public documentation</pre>
+ </body>
+ </html>
