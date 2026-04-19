@@ -1,0 +1,3 @@
+[submodule "Pihub"]
+    path = Pihub
+    url = https://github.com/rintaro-s/Pihub.git
